@@ -1,6 +1,7 @@
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
+import path from "node:path";
 import { AgentSession, RemoteExecutionPolicy } from "./types";
 import { agentSessionKey } from "./sessionRegistry";
 
@@ -80,7 +81,12 @@ export class AgentReplyRunner {
       }
       return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
     }
-    const command = buildAgentCommand(job.session, job.policy);
+    const allowNonGitWorkspace = job.session.source === "codex"
+      && job.session.ownership === "external"
+      && job.session.completionEvidence === "authoritative"
+      && !job.session.sessionId.startsWith("new:")
+      && !await hasGitMetadataAncestor(job.session.cwd);
+    const command = buildAgentCommand(job.session, job.policy, { allowNonGitWorkspace });
     const resolvedExecutable = await this.executableResolver?.(job.session.source as "codex" | "claude-code");
     if (this.executableResolver && !resolvedExecutable) {
       const displayName = job.session.source === "codex" ? "Codex" : "Claude Code";
@@ -207,7 +213,8 @@ export class AgentReplyQueue {
 
 export function buildAgentCommand(
   session: AgentSession,
-  policy: RemoteExecutionPolicy
+  policy: RemoteExecutionPolicy,
+  options: { allowNonGitWorkspace?: boolean } = {}
 ): { executable: string; args: string[] } {
   if (session.source === "codex") {
     const args = ["exec"];
@@ -215,6 +222,12 @@ export function buildAgentCommand(
       args.push("--sandbox", "read-only");
     }
     args.push("--json");
+    if (options.allowNonGitWorkspace
+      && session.ownership === "external"
+      && session.completionEvidence === "authoritative"
+      && !session.sessionId.startsWith("new:")) {
+      args.push("--skip-git-repo-check");
+    }
     if (session.sessionId.startsWith("new:")) {
       args.push("-");
     } else {
@@ -237,6 +250,21 @@ export function buildAgentCommand(
     return { executable: process.platform === "win32" ? "claude.exe" : "claude", args };
   }
   throw new Error(`不支持恢复 Agent：${session.source}`);
+}
+
+export async function hasGitMetadataAncestor(cwd: string): Promise<boolean> {
+  let current = path.resolve(cwd);
+  while (true) {
+    const gitMetadata = await fs.stat(path.join(current, ".git")).catch(() => undefined);
+    if (gitMetadata) {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return false;
+    }
+    current = parent;
+  }
 }
 
 function sessionKey(session: AgentSession): string {

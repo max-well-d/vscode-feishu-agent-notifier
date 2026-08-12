@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.2
+
+- Resume an authoritative completed Codex session from its exact original non-Git working directory by using the public `--skip-git-repo-check` compatibility flag.
+- Scope the non-Git compatibility path to external, authoritative, existing Codex sessions; discovered sessions, new sessions, managed sessions, and Claude Code never receive the flag.
+- Keep the selected remote execution policy unchanged: this compatibility flag does not bypass the Codex sandbox or approval policy.
+
 ## 0.13.1
 
 - Fix quoted completion cards created before the 0.13.0 reload being rejected as disk-only sessions after upgrade.

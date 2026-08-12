@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId } from "../src/agentReply";
+import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId, hasGitMetadataAncestor } from "../src/agentReply";
 import { AgentSession } from "../src/types";
 
 const codex: AgentSession = {
@@ -36,6 +39,33 @@ test("builds public resume commands without bypass flags", () => {
   assert.ok(claudeCommand.args.includes("plan"));
   assert.ok(!buildAgentCommand({ ...codex, sessionId: "new:test" }, "planOnly").args.includes("resume"));
   assert.ok(!buildAgentCommand({ ...codex, source: "claude-code", sessionId: "new:test" }, "planOnly").args.includes("--resume"));
+});
+
+test("allows non-Git Codex resume only for an authoritative external session", () => {
+  const authoritativeExternal: AgentSession = {
+    ...codex,
+    ownership: "external",
+    completionEvidence: "authoritative"
+  };
+  const command = buildAgentCommand(authoritativeExternal, "inherit", { allowNonGitWorkspace: true });
+  assert.ok(command.args.includes("--skip-git-repo-check"));
+  assert.ok(!buildAgentCommand({ ...authoritativeExternal, completionEvidence: "discovered" }, "inherit", { allowNonGitWorkspace: true }).args.includes("--skip-git-repo-check"));
+  assert.ok(!buildAgentCommand({ ...authoritativeExternal, ownership: "managed" }, "inherit", { allowNonGitWorkspace: true }).args.includes("--skip-git-repo-check"));
+  assert.ok(!buildAgentCommand({ ...authoritativeExternal, sessionId: "new:test" }, "inherit", { allowNonGitWorkspace: true }).args.includes("--skip-git-repo-check"));
+  assert.ok(!buildAgentCommand({ ...authoritativeExternal, source: "claude-code" }, "inherit", { allowNonGitWorkspace: true }).args.includes("--skip-git-repo-check"));
+});
+
+test("detects Git metadata only in the working directory ancestry", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-agent-git-check-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const repository = path.join(root, "repo");
+  const child = path.join(repository, "nested");
+  const sibling = path.join(root, "plain");
+  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+  await fs.mkdir(child, { recursive: true });
+  await fs.mkdir(sibling, { recursive: true });
+  assert.equal(await hasGitMetadataAncestor(child), true);
+  assert.equal(await hasGitMetadataAncestor(sibling), false);
 });
 
 test("serializes jobs for the same session and can cancel queued work", async () => {
