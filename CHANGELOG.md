@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.0
+
+- Add single-owner Codex managed sessions backed by the official stdio App Server protocol, with persistent `thread/start` / `thread/resume`, streamed completion events, and no per-message `codex exec resume` process.
+- Add `/steer` for explicitly appending input to the active turn of a Feishu-managed Codex session; `/cancel` now interrupts that App Server turn.
+- Separate managed sessions from external IDE/CLI sessions. External sessions can run a remote follow-up only after an authoritative Hook/transcript completion event.
+- Remove the unsafe transcript-mtime idle heuristic, so a long-running silent tool call can no longer be mistaken for a completed turn.
+- Persist routes for bot acknowledgements and migrate provisional Claude session mappings after stream-json reveals the real session ID.
+- Add App Server lifecycle diagnostics and extend automated coverage to 83 unit/process tests.
+
 ## 0.12.2
 
 - Resolve Codex and Claude Code executables from their installed official VS Code extensions before falling back to `PATH`.

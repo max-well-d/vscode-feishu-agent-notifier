@@ -19,6 +19,7 @@ import {
 import { LocalHookServer } from "./server";
 import { buildStatusPresentation, StatusSnapshot } from "./statusUi";
 import { AgentReplyJob, AgentReplyQueue, AgentReplyRunner } from "./agentReply";
+import { CodexAppServerClient } from "./codexAppServer";
 import { ReplyRouter } from "./replyRouter";
 import { discoverLocalSessions } from "./sessionCatalog";
 import { SessionRegistry } from "./sessionRegistry";
@@ -55,6 +56,7 @@ let feishuInboundError: string | undefined;
 let sessionRegistry: SessionRegistry | undefined;
 let agentReplyQueue: AgentReplyQueue | undefined;
 let replyRouter: ReplyRouter | undefined;
+let codexAppServerClient: CodexAppServerClient | undefined;
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
 let claudeRealtimeSource: "message-display" | "transcript" | "probing" | undefined;
@@ -108,6 +110,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     claude: agentExecutablePaths["claude-code"]
   });
   logAgentCapabilities();
+  codexAppServerClient = createCodexAppServerClient(context);
   agentReplyQueue = createAgentReplyQueue(context);
   replyRouter = createReplyRouter(context);
 
@@ -144,6 +147,8 @@ export async function deactivate(): Promise<void> {
   stopReceiverTakeoverMonitor();
   agentReplyQueue?.dispose();
   agentReplyQueue = undefined;
+  codexAppServerClient?.dispose();
+  codexAppServerClient = undefined;
   replyRouter = undefined;
   sessionRegistry = undefined;
   await feishuInboundClient?.disconnect();
@@ -347,29 +352,68 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
       async (source) => {
         await refreshAgentExecutables();
         return agentExecutablePaths[source];
-      }
+      },
+      codexAppServerClient
     ),
     1,
     {
       waitUntilReady: (job, signal) => waitUntilAgentSessionIdle(job, signal),
       onStarted: async (job) => {
-        await replyToInbound(job.inboundMessageId, job.chatId,
+        const updated = await sessionRegistry?.updateExecutionState(job.session, "progress");
+        if (updated) {
+          Object.assign(job.session, updated);
+        }
+        const replyId = await replyToInbound(job.inboundMessageId, job.chatId,
           `开始执行：${job.session.source === "codex" ? "Codex" : "Claude Code"}/${job.session.project}`);
+        if (replyId) {
+          await sessionRegistry?.recordMessageRoute(replyId, job.session);
+        }
         void refreshStatusBar(context);
       },
       onFinished: async (job, result) => {
         if (result instanceof Error) {
+          const updated = await sessionRegistry?.updateExecutionState(job.session, "failed");
+          if (updated) {
+            Object.assign(job.session, updated);
+          }
           output?.error(`飞书远程回复失败 ${job.session.source}/${job.session.sessionId}：${result.message}`);
-          await replyToInbound(job.inboundMessageId, job.chatId, `执行失败：${result.message}`);
+          const replyId = await replyToInbound(job.inboundMessageId, job.chatId, `执行失败：${result.message}`);
+          if (replyId) {
+            await sessionRegistry?.recordMessageRoute(replyId, job.session);
+          }
         } else {
+          const updated = await sessionRegistry?.updateExecutionState(job.session, "completed", result.sessionId);
+          if (updated) {
+            Object.assign(job.session, updated);
+          }
           output?.info(`飞书远程回复完成 ${job.session.source}/${job.session.sessionId}，耗时 ${result.durationMs}ms。`);
-          await replyToInbound(job.inboundMessageId, job.chatId,
+          const replyId = await replyToInbound(job.inboundMessageId, job.chatId,
             `执行完成：${job.session.source === "codex" ? "Codex" : "Claude Code"}/${job.session.project}\nAgent 输出将通过正常通知通道发送。`);
+          if (replyId) {
+            await sessionRegistry?.recordMessageRoute(replyId, job.session);
+          }
         }
         void refreshStatusBar(context);
       }
     }
   );
+}
+
+function createCodexAppServerClient(context: vscode.ExtensionContext): CodexAppServerClient {
+  return new CodexAppServerClient({
+    executable: async () => {
+      await refreshAgentExecutables();
+      return agentExecutablePaths.codex;
+    },
+    version: () => context.extension.packageJSON.version as string,
+    log: {
+      debug: (message) => output?.debug(message),
+      info: (message) => output?.info(message),
+      warn: (message) => output?.warn(message),
+      error: (message) => output?.error(message)
+    },
+    onState: () => void refreshStatusBar(context)
+  });
 }
 
 function createReplyRouter(context: vscode.ExtensionContext): ReplyRouter {
@@ -385,7 +429,20 @@ function createReplyRouter(context: vscode.ExtensionContext): ReplyRouter {
     status: () => remoteStatusText(context),
     defaultWorkspace: () => vscode.workspace.workspaceFolders?.[0]
       ? { cwd: vscode.workspace.workspaceFolders[0].uri.fsPath, project: vscode.workspace.workspaceFolders[0].name }
-      : undefined
+      : undefined,
+    createManagedCodexSession: async (cwd, project, policy) => {
+      if (!codexAppServerClient || !sessionRegistry) {
+        throw new Error("Codex App Server 托管执行器尚未初始化");
+      }
+      const session = await codexAppServerClient.startThread(cwd, project, policy);
+      return sessionRegistry.recordManagedSession(session);
+    },
+    steerManagedCodex: async (session, prompt) => {
+      if (!codexAppServerClient) {
+        throw new Error("Codex App Server 托管执行器尚未初始化");
+      }
+      return codexAppServerClient.steer(session, prompt);
+    }
   });
 }
 
@@ -457,12 +514,6 @@ async function waitUntilAgentSessionIdle(job: AgentReplyJob, signal: AbortSignal
   const maximumWait = Math.max(1, getSetting<number>("remoteActiveWaitMinutes", 120)) * 60_000;
   const startedAt = Date.now();
   while (!signal.aborted) {
-    // A session discovered from disk may have been marked active before this
-    // window observed its final Hook event. Refresh the lightweight catalog so
-    // a settled transcript can release the queued reply.
-    await refreshLocalSessionCatalog().catch((error) => {
-      output?.warn(`等待 Agent 会话时刷新目录失败：${(error as Error).message}`);
-    });
     const latest = await sessionRegistry?.getSession(`${job.session.source}:${job.session.sessionId}`);
     if (!latest || latest.status !== "progress") {
       return;
@@ -484,15 +535,16 @@ async function refreshLocalSessionCatalog(): Promise<void> {
   output?.debug(`本地会话目录已刷新：发现 ${sessions.length}，更新 ${changed}。`);
 }
 
-async function replyToInbound(messageId: string, chatId: string, text: string): Promise<void> {
+async function replyToInbound(messageId: string, chatId: string, text: string): Promise<string | undefined> {
   if (!feishuInboundClient || feishuInboundState !== "connected") {
     output?.warn(`飞书入站未连接，无法回复消息 ${messageId.slice(0, 8)}。`);
-    return;
+    return undefined;
   }
   try {
-    await feishuInboundClient.reply(messageId, chatId, Array.from(text).slice(0, 3000).join(""));
+    return await feishuInboundClient.reply(messageId, chatId, Array.from(text).slice(0, 3000).join(""));
   } catch (error) {
     output?.error(`发送飞书入站确认失败：${(error as Error).message}`);
+    return undefined;
   }
 }
 
@@ -503,7 +555,8 @@ function remoteStatusText(context: vscode.ExtensionContext): string {
     `远程策略：${policy === "disabled" ? "禁用" : policy === "planOnly" ? "只读规划" : "继承本机权限"}`,
     `长连接：${feishuInboundState}${feishuInboundError ? `（${feishuInboundError}）` : ""}`,
     `运行中：${agentReplyQueue?.activeCount ?? 0}`,
-    `排队：${agentReplyQueue?.pendingCount ?? 0}`
+    `排队：${agentReplyQueue?.pendingCount ?? 0}`,
+    `Codex 托管器：${codexAppServerClient?.state ?? "stopped"}${codexAppServerClient?.lastError ? `（${codexAppServerClient.lastError}）` : ""}`
   ].join("\n");
 }
 
@@ -517,7 +570,7 @@ async function showRemoteSessions(context: vscode.ExtensionContext): Promise<voi
     `远程状态：${remoteStatusText(context).replace(/\n/g, "；")}`,
     "",
     ...sessions.map((session, index) =>
-      `${index + 1}. **${session.alias || session.project || session.sessionId}** — ${session.source} — ${session.sessionId} — ${session.cwd || "无工作目录"}`),
+      `${index + 1}. **${session.alias || session.project || session.sessionId}** — ${session.source} — ${session.ownership === "managed" ? "飞书托管" : "外部"}/${session.status === "progress" ? "运行中" : session.completionEvidence === "authoritative" ? "已确认完成" : "未确认完成"} — ${session.sessionId} — ${session.cwd || "无工作目录"}`),
     ""
   ].join("\n");
   const document = await vscode.workspace.openTextDocument({ content, language: "markdown" });
@@ -1022,7 +1075,9 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
     inboundState: feishuInboundState,
     inboundError: feishuInboundError,
     remoteActive: agentReplyQueue?.activeCount ?? 0,
-    remotePending: agentReplyQueue?.pendingCount ?? 0
+    remotePending: agentReplyQueue?.pendingCount ?? 0,
+    codexManagedState: codexAppServerClient?.state,
+    codexManagedError: codexAppServerClient?.lastError
   };
   renderStatusBar();
 }
@@ -1041,7 +1096,9 @@ function renderStatusBar(): void {
     inboundState: feishuInboundState,
     inboundError: feishuInboundError,
     remoteActive: agentReplyQueue?.activeCount ?? 0,
-    remotePending: agentReplyQueue?.pendingCount ?? 0
+    remotePending: agentReplyQueue?.pendingCount ?? 0,
+    codexManagedState: codexAppServerClient?.state,
+    codexManagedError: codexAppServerClient?.lastError
   });
   statusBar.text = presentation.text;
   statusBar.backgroundColor = presentation.severity === "error"
@@ -1266,6 +1323,8 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
       `${normalizedStringArray(getSetting<string[]>("remoteAllowedUserOpenIds", [])).length} 个 open_id`));
     checks.push(checkLine("远程回复队列", true,
       `运行 ${agentReplyQueue?.activeCount ?? 0}，排队 ${agentReplyQueue?.pendingCount ?? 0}`));
+    checks.push(checkLine("Codex App Server 托管器", codexAppServerClient?.state !== "failed",
+      `${codexAppServerClient?.state ?? "stopped"}${codexAppServerClient?.lastError ? `，${codexAppServerClient.lastError}` : ""}；首次 /new codex 时按需启动`));
   }
 
   try {

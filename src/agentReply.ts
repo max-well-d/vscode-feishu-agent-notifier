@@ -8,6 +8,18 @@ export interface AgentReplyResult {
   exitCode: number;
   durationMs: number;
   outputTail: string;
+  sessionId?: string;
+  backend?: "codex-app-server" | "cli";
+}
+
+export interface ManagedCodexExecutor {
+  runTurn(
+    session: AgentSession,
+    prompt: string,
+    policy: RemoteExecutionPolicy,
+    signal: AbortSignal,
+    timeoutMs: number
+  ): Promise<AgentReplyResult>;
 }
 
 export interface AgentReplyJob {
@@ -42,7 +54,8 @@ export class AgentReplyRunner {
   public constructor(
     private readonly timeoutMs = 30 * 60 * 1000,
     private readonly spawnImpl: typeof spawn = spawn,
-    private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>
+    private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>,
+    private readonly managedCodex?: ManagedCodexExecutor
   ) {}
 
   public async run(job: AgentReplyJob, signal: AbortSignal): Promise<AgentReplyResult> {
@@ -59,6 +72,14 @@ export class AgentReplyRunner {
     if (!stat?.isDirectory()) {
       throw new Error(`会话工作目录不可用：${job.session.cwd || "未记录"}`);
     }
+    if (job.session.source === "codex"
+      && job.session.ownership === "managed"
+      && job.session.managedBackend === "codex-app-server") {
+      if (!this.managedCodex) {
+        throw new Error("Codex App Server 托管执行器未初始化");
+      }
+      return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+    }
     const command = buildAgentCommand(job.session, job.policy);
     const resolvedExecutable = await this.executableResolver?.(job.session.source as "codex" | "claude-code");
     if (this.executableResolver && !resolvedExecutable) {
@@ -72,7 +93,8 @@ export class AgentReplyRunner {
       job.session.cwd,
       job.prompt,
       signal,
-      this.timeoutMs
+      this.timeoutMs,
+      job.session.source
     );
   }
 }
@@ -228,7 +250,8 @@ function runChildProcess(
   cwd: string,
   prompt: string,
   signal: AbortSignal,
-  timeoutMs: number
+  timeoutMs: number,
+  source: AgentSession["source"]
 ): Promise<AgentReplyResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -284,7 +307,9 @@ function runChildProcess(
       const result: AgentReplyResult = {
         exitCode: code ?? -1,
         durationMs: Date.now() - startedAt,
-        outputTail: compactOutput(output)
+        outputTail: compactOutput(output),
+        sessionId: source === "claude-code" ? extractClaudeSessionId(output) : undefined,
+        backend: "cli"
       };
       if (result.exitCode === 0) {
         resolve(result);
@@ -294,6 +319,25 @@ function runChildProcess(
     });
     child.stdin.end(prompt, "utf8");
   });
+}
+
+export function extractClaudeSessionId(output: string): string | undefined {
+  let sessionId: string | undefined;
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.trim().startsWith("{")) {
+      continue;
+    }
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      const candidate = value.session_id ?? value.sessionId;
+      if (typeof candidate === "string" && candidate.trim()) {
+        sessionId = candidate.trim();
+      }
+    } catch {
+      // Ignore non-JSON diagnostic lines emitted alongside stream-json.
+    }
+  }
+  return sessionId;
 }
 
 function compactOutput(value: string): string {

@@ -63,7 +63,10 @@ export class SessionRegistry {
         project: event.project || previous?.project || path.basename(event.cwd) || "unknown",
         lastSeenAt: event.occurredAt || this.now().toISOString(),
         status: event.status,
-        alias: previous?.alias
+        alias: previous?.alias,
+        ownership: previous?.ownership ?? "external",
+        completionEvidence: "authoritative",
+        managedBackend: previous?.managedBackend
       };
       document.sessions[key] = session;
       return session;
@@ -79,10 +82,32 @@ export class SessionRegistry {
         }
         const key = agentSessionKey(session.source, session.sessionId);
         const previous = document.sessions[key];
-        if (!previous
-          || Date.parse(session.lastSeenAt) > Date.parse(previous.lastSeenAt)
+        if (!previous) {
+          document.sessions[key] = {
+            ...session,
+            ownership: session.ownership ?? "external",
+            completionEvidence: session.completionEvidence ?? "discovered"
+          };
+          changed += 1;
+          continue;
+        }
+        if (Date.parse(session.lastSeenAt) > Date.parse(previous.lastSeenAt)
           || (session.lastSeenAt === previous.lastSeenAt && session.status !== previous.status)) {
-          document.sessions[key] = { ...session, alias: previous?.alias ?? session.alias };
+          const authoritative = previous.completionEvidence === "authoritative";
+          const newerExternalActivity = authoritative
+            && previous.ownership !== "managed"
+            && Date.parse(session.lastSeenAt) > Date.parse(previous.lastSeenAt) + 1_000;
+          document.sessions[key] = {
+            ...previous,
+            ...session,
+            status: authoritative
+              ? previous.status === "progress" || newerExternalActivity ? "progress" : previous.status
+              : session.status,
+            alias: previous.alias ?? session.alias,
+            ownership: previous.ownership ?? session.ownership ?? "external",
+            completionEvidence: previous.completionEvidence ?? session.completionEvidence ?? "discovered",
+            managedBackend: previous.managedBackend ?? session.managedBackend
+          };
           changed += 1;
         }
       }
@@ -101,7 +126,10 @@ export class SessionRegistry {
         project: event.project || previous?.project || path.basename(event.cwd) || "unknown",
         lastSeenAt: event.occurredAt || this.now().toISOString(),
         status: event.status,
-        alias: previous?.alias
+        alias: previous?.alias,
+        ownership: previous?.ownership ?? "external",
+        completionEvidence: "authoritative",
+        managedBackend: previous?.managedBackend
       };
       const createdAt = this.now().toISOString();
       for (const receipt of receipts) {
@@ -119,6 +147,64 @@ export class SessionRegistry {
       }
       const route = document.messages[messageId];
       return route ? document.sessions[route.sessionKey] : undefined;
+    });
+  }
+
+  public recordManagedSession(session: AgentSession): Promise<AgentSession> {
+    return this.mutate((document) => {
+      const managed: AgentSession = {
+        ...session,
+        ownership: "managed",
+        completionEvidence: "authoritative"
+      };
+      const key = agentSessionKey(managed.source, managed.sessionId);
+      const previous = document.sessions[key];
+      document.sessions[key] = { ...managed, alias: previous?.alias ?? managed.alias };
+      return document.sessions[key];
+    });
+  }
+
+  public recordMessageRoute(messageId: string, session: AgentSession): Promise<void> {
+    return this.mutate((document) => {
+      const key = agentSessionKey(session.source, session.sessionId);
+      document.sessions[key] = document.sessions[key] ?? session;
+      document.messages[messageId] = { sessionKey: key, createdAt: this.now().toISOString() };
+    });
+  }
+
+  public updateExecutionState(
+    original: AgentSession,
+    status: AgentSession["status"],
+    actualSessionId?: string
+  ): Promise<AgentSession> {
+    return this.mutate((document) => {
+      const oldKey = agentSessionKey(original.source, original.sessionId);
+      const previous = document.sessions[oldKey] ?? original;
+      const updated: AgentSession = {
+        ...previous,
+        sessionId: actualSessionId || previous.sessionId,
+        lastSeenAt: this.now().toISOString(),
+        status,
+        ownership: previous.ownership ?? original.ownership ?? "external",
+        completionEvidence: "authoritative",
+        managedBackend: previous.managedBackend ?? original.managedBackend
+      };
+      const newKey = agentSessionKey(updated.source, updated.sessionId);
+      document.sessions[newKey] = updated;
+      if (newKey !== oldKey) {
+        delete document.sessions[oldKey];
+        for (const route of Object.values(document.messages)) {
+          if (route.sessionKey === oldKey) {
+            route.sessionKey = newKey;
+          }
+        }
+        for (const selection of Object.values(document.chatSelections)) {
+          if (selection.sessionKey === oldKey) {
+            selection.sessionKey = newKey;
+          }
+        }
+      }
+      return updated;
     });
   }
 

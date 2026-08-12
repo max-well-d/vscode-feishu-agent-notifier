@@ -3,6 +3,8 @@ export type ReceiveIdType = "open_id" | "user_id" | "email" | "chat_id";
 export type MessageFormat = "card" | "text";
 export type DeliveryTiming = "realtime" | "completion";
 export type RemoteExecutionPolicy = "disabled" | "planOnly" | "inherit";
+export type AgentSessionOwnership = "external" | "managed";
+export type SessionCompletionEvidence = "authoritative" | "discovered";
 
 export interface AgentEvent {
   source: "codex" | "claude-code" | "unknown";
@@ -53,6 +55,9 @@ export interface AgentSession {
   lastSeenAt: string;
   status: AgentEvent["status"];
   alias?: string;
+  ownership?: AgentSessionOwnership;
+  completionEvidence?: SessionCompletionEvidence;
+  managedBackend?: "codex-app-server" | "claude-cli";
 }
 
 export interface InboundReplyContext {

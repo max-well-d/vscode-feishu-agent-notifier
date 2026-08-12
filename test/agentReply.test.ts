@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand } from "../src/agentReply";
+import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId } from "../src/agentReply";
 import { AgentSession } from "../src/types";
 
 const codex: AgentSession = {
@@ -50,4 +50,12 @@ test("serializes jobs for the same session and can cancel queued work", async ()
   assert.equal(queue.cancelForChat("chat"), 2);
   await firstRejected;
   await secondRejected;
+});
+
+test("extracts the actual Claude session id from stream-json output", () => {
+  assert.equal(extractClaudeSessionId([
+    '{"type":"system","session_id":"claude-session-1"}',
+    '{"type":"result","session_id":"claude-session-1","result":"done"}'
+  ].join("\n")), "claude-session-1");
+  assert.equal(extractClaudeSessionId("plain diagnostics"), undefined);
 });

@@ -25,7 +25,9 @@
   - 飞书自建应用机器人：通过 `open_id`、`user_id`、`email` 或 `chat_id` 指定目标。
 - 应用机器人模式支持飞书 WebSocket 长连接入站，不需要公网服务器或内网穿透。
 - 引用一条插件通知即可精确恢复其 Codex/Claude Code 会话；也可列出、选择、命名历史本地会话或创建新会话。
-- 远程回复按会话串行执行；目标任务仍在运行时自动等待，支持超时、取消、重复事件去重和最多 20 条排队保护。
+- `/new codex` 使用官方 Codex App Server stdio 协议创建由插件单独管理的会话，支持权威运行状态、完成事件、取消和显式 `/steer`。
+- 外部 VS Code/CLI 会话只有在收到权威完成事件后才能续写；不再根据 transcript 文件静默时间猜测任务结束。
+- 远程回复按会话串行执行，支持超时、取消、重复事件去重和最多 20 条排队保护。
 - 远程执行默认关闭；可选择只读规划，或显式继承本机 Agent 权限。用户、群聊和群聊 @ 均有独立白名单策略。
 - 应用机器人模式可按项目名或绝对路径把通知路由到不同群聊。
 - 转发脚本只连接 `127.0.0.1` 上的 VS Code 扩展，不向局域网开放端口。
@@ -44,7 +46,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.12.2.vsix
+code --install-extension .\feishu-agent-notifier-0.13.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -108,15 +110,21 @@ code --install-extension .\feishu-agent-notifier-0.12.2.vsix
 /use <序号|别名|session-id>       选择当前飞书聊天的默认会话
 /send <目标> <内容>               直接向指定历史会话提交一轮
 /new <codex|cc> <内容>            在当前 VS Code 工作区创建新会话
+/steer <内容>                     追加到正在运行的托管 Codex turn
 /alias <名称>                     为引用或已选择的会话设置别名
 /status                           查看连接与队列状态
 /cancel                           取消当前飞书聊天提交的任务
 /help                             显示帮助
 ```
 
-普通文本按“引用消息 → 当前聊天已选择会话”的顺序解析目标，不使用“最近会话”猜测。飞书消息 ID、会话 ID、工作目录、别名和选择状态保存在扩展私有目录，默认最多保留 500 个会话和 5,000 条消息映射；消息映射 30 天后过期。
+普通文本按“引用消息 → 当前聊天已选择会话”的顺序解析目标，不使用“最近会话”猜测。Agent 通知以及机器人返回的“已接收/开始执行/执行完成”消息都会绑定到同一个准确会话。飞书消息 ID、会话 ID、工作目录、别名和选择状态保存在扩展私有目录，默认最多保留 500 个会话和 5,000 条消息映射；消息映射 30 天后过期。
 
-如果目标会话仍在执行，回复会等待其完成。扩展通过公开 CLI 恢复持久化会话，不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 必须保持运行；同一个飞书 App ID 应只在一台电脑上启用入站连接，因为飞书长连接的多个客户端采用集群分发而不是广播。
+会话分为两类：
+
+- **飞书托管**：`/new codex` 创建的 Codex 会话由扩展持有一个 App Server stdio 连接；每轮使用 `turn/start`，完成以 `turn/completed` 为准。运行中普通消息进入队列，只有显式 `/steer` 会追加到当前 turn。`/new cc` 仍使用 Claude Code 非交互 CLI，但由插件队列保持单一执行所有者，并在首轮输出后回填真实 session ID。
+- **外部会话**：由官方 VS Code 插件或独立 CLI 创建。插件只会在 Stop/task-complete 等权威事件确认结束后运行公开的 resume 命令；仅从磁盘发现、没有完成证据的会话会被拒绝，而不是冒险并发续写。
+
+扩展不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 必须保持运行；同一个飞书 App ID 应只在一台电脑上启用入站连接，因为飞书长连接的多个客户端采用集群分发而不是广播。
 
 扩展会自动查找 OpenAI 与 Claude Code 官方 VS Code 扩展内置的 CLI，因此不要求扩展宿主和终端拥有相同的 `PATH`。若使用独立安装或定制 CLI，可在可视化设置中填写 `Codex Executable Path` / `Claude Executable Path`；完整自检会显示最终解析到的路径。
 
@@ -173,7 +181,7 @@ Codex 官方 `Stop` Hook 会直接提供最后一条 assistant 回复。非托�
 - 离线队列可能暂存完整回复；对落盘敏感的环境请关闭 `queueWhenOffline`。
 - 本扩展不会修改项目级配置；只在用户明确执行命令后修改用户级配置。
 - 飞书远程回复相当于给白名单用户提供本机 Agent 输入能力。`planOnly` 使用 Codex 只读沙箱和 Claude Code plan 模式；`inherit` 可能修改文件、执行命令并消耗 Agent 配额。
-- 远程回复正文通过子进程 stdin 传递，不放入命令行参数；扩展不会自动添加任何 `dangerously-bypass-*` 参数。
+- 远程回复正文通过 Codex App Server JSON-RPC 或 Agent 子进程 stdin 传递，不放入命令行参数；扩展不会自动添加任何 `dangerously-bypass-*` 参数。
 - 群聊建议只授予“@机器人消息”权限，并保持 `remoteRequireGroupMention=true`。
 
 完整威胁模型与漏洞报告方式见 [SECURITY.md](SECURITY.md)。
@@ -187,7 +195,7 @@ Codex 官方 `Stop` Hook 会直接提供最后一条 assistant 回复。非托�
 - Codex 版本、官方 `Stop` Hook 与 `notify` 回退
 - Claude Code `MessageDisplay` / `Stop` / `StopFailure`
 - 离线队列和最近一次投递结果
-- 飞书入站长连接、远程用户白名单和远程回复队列
+- 飞书入站长连接、远程用户白名单、远程回复队列和 Codex App Server 托管器
 
 报告不会包含飞书凭据、本地接收 Token 或 Agent 回复正文。若状态栏显示警告，先运行自检，再使用“安装/修复 Hooks”或“重试待处理通知”。
 

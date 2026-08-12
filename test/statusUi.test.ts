@@ -59,10 +59,12 @@ test("shows bidirectional readiness and inbound failures", () => {
     remoteExecutionPolicy: "planOnly",
     inboundState: "connected",
     remoteActive: 0,
-    remotePending: 1
+    remotePending: 1,
+    codexManagedState: "ready"
   });
   assert.match(connected.text, /双向/);
   assert.match(connected.details.join("\n"), /只读规划，已连接，运行 0 \/ 排队 1/);
+  assert.match(connected.details.join("\n"), /Codex 托管已就绪/);
   const failed = buildStatusPresentation({
     ...ready,
     deliveryMode: "app",

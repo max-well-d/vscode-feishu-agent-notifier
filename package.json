@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.12.2",
+  "version": "0.13.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -290,7 +290,7 @@
           "default": 120,
           "scope": "machine",
           "order": 29,
-          "description": "目标会话正在运行时，远程回复等待其结束的最长分钟数。"
+          "description": "目标会话正在运行时，远程回复等待权威完成事件的最长分钟数；不会再用 transcript 文件静默时间猜测结束。"
         },
         "feishuAgentNotifier.codexExecutablePath": {
           "type": "string",

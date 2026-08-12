@@ -50,3 +50,58 @@ test("updates a recently discovered active session to idle without changing mtim
   await registry.recordDiscoveredSessions([{ ...session, status: "completed" }]);
   assert.equal((await registry.getSession("session-2"))?.status, "completed");
 });
+
+test("does not let transcript mtime override an authoritative active state", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-authoritative-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  await registry.recordEvent({ ...event, sessionId: "session-active", status: "progress", eventName: "assistant" });
+  await registry.recordDiscoveredSessions([{
+    source: "codex",
+    sessionId: "session-active",
+    cwd: event.cwd,
+    project: event.project,
+    lastSeenAt: "2026-08-13T02:00:00.000Z",
+    status: "completed",
+    ownership: "external",
+    completionEvidence: "discovered"
+  }]);
+  const session = await registry.getSession("session-active");
+  assert.equal(session?.status, "progress");
+  assert.equal(session?.completionEvidence, "authoritative");
+});
+
+test("treats newer transcript activity after completion as active until the next completion event", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-new-turn-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  await registry.recordEvent({ ...event, sessionId: "session-new-turn", status: "completed" });
+  await registry.recordDiscoveredSessions([{
+    source: "codex",
+    sessionId: "session-new-turn",
+    cwd: event.cwd,
+    project: event.project,
+    lastSeenAt: "2026-08-13T00:00:02.000Z",
+    status: "completed",
+    ownership: "external",
+    completionEvidence: "discovered"
+  }]);
+  assert.equal((await registry.getSession("session-new-turn"))?.status, "progress");
+});
+
+test("migrates bot message routes when a managed CLI reveals its real session id", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-migrate-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  const provisional = await registry.recordManagedSession({
+    source: "claude-code",
+    sessionId: "new:temporary",
+    cwd: event.cwd,
+    project: event.project,
+    lastSeenAt: event.occurredAt,
+    status: "progress",
+    managedBackend: "claude-cli"
+  });
+  await registry.recordMessageRoute("bot-start", provisional);
+  await registry.selectForChat("oc_chat", provisional);
+  await registry.updateExecutionState(provisional, "completed", "claude-real-session");
+  assert.equal((await registry.resolveMessage("bot-start"))?.sessionId, "claude-real-session");
+  assert.equal((await registry.selectedForChat("oc_chat"))?.sessionId, "claude-real-session");
+});

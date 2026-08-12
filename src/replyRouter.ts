@@ -9,9 +9,15 @@ export interface ReplyRouterOptions {
   queue: AgentReplyQueue;
   policy: () => RemoteExecutionPolicy;
   refreshSessions: () => Promise<void>;
-  reply: (message: InboundReplyContext, text: string) => Promise<void>;
+  reply: (message: InboundReplyContext, text: string) => Promise<string | undefined | void>;
   status: () => string;
   defaultWorkspace: () => { cwd: string; project: string } | undefined;
+  createManagedCodexSession?: (
+    cwd: string,
+    project: string,
+    policy: RemoteExecutionPolicy
+  ) => Promise<AgentSession>;
+  steerManagedCodex?: (session: AgentSession, prompt: string) => Promise<string>;
 }
 
 export class ReplyRouter {
@@ -105,15 +111,64 @@ export class ReplyRouter {
           await this.options.reply(message, "用法：/new <codex|cc> <内容>。需要先在 VS Code 打开目标工作区。 ");
           return;
         }
-        const session: AgentSession = {
-          source: sourceName === "codex" ? "codex" : "claude-code",
-          sessionId: `new:${crypto.randomUUID()}`,
-          cwd: workspace.cwd,
-          project: workspace.project,
-          lastSeenAt: new Date().toISOString(),
-          status: "completed"
-        };
+        const policy = this.options.policy();
+        if (policy === "disabled") {
+          await this.options.reply(message, "飞书远程回复已禁用。请在 VS Code 设置中启用后重试。 ");
+          return;
+        }
+        let session: AgentSession;
+        if (sourceName === "codex") {
+          if (!this.options.createManagedCodexSession) {
+            await this.options.reply(message, "Codex App Server 托管执行器不可用。请运行插件自检。 ");
+            return;
+          }
+          try {
+            session = await this.options.createManagedCodexSession(workspace.cwd, workspace.project, policy);
+          } catch (error) {
+            await this.options.reply(message, `创建托管 Codex 会话失败：${(error as Error).message}`);
+            return;
+          }
+        } else {
+          session = {
+            source: "claude-code",
+            sessionId: `new:${crypto.randomUUID()}`,
+            cwd: workspace.cwd,
+            project: workspace.project,
+            lastSeenAt: new Date().toISOString(),
+            status: "completed",
+            ownership: "managed",
+            completionEvidence: "authoritative",
+            managedBackend: "claude-cli"
+          };
+          await this.options.registry.recordManagedSession(session);
+        }
+        await this.options.registry.selectForChat(message.chatId, session);
         await this.enqueue(message, session, prompt);
+        return;
+      }
+      case "/steer": {
+        const session = await this.resolveContextSession(message);
+        const prompt = rest.join(" ").trim();
+        if (!session || !prompt) {
+          await this.options.reply(message, "用法：引用正在运行的托管 Codex 消息并发送 /steer <追加指令>");
+          return;
+        }
+        if (session.source !== "codex"
+          || session.ownership !== "managed"
+          || session.managedBackend !== "codex-app-server"
+          || !this.options.steerManagedCodex) {
+          await this.options.reply(message, "/steer 仅支持由飞书 /new 创建且正在运行的托管 Codex 会话。 ");
+          return;
+        }
+        try {
+          const turnId = await this.options.steerManagedCodex(session, prompt);
+          const replyId = await this.options.reply(message, `已追加到当前 Codex turn（${turnId.slice(0, 8)}）。`);
+          if (replyId) {
+            await this.options.registry.recordMessageRoute(replyId, session);
+          }
+        } catch (error) {
+          await this.options.reply(message, `追加失败：${(error as Error).message}`);
+        }
         return;
       }
       case "/cancel": {
@@ -136,6 +191,13 @@ export class ReplyRouter {
       await this.options.reply(message, "该历史会话没有可用的工作目录，无法安全恢复。 ");
       return;
     }
+    const ownership = session.ownership ?? "external";
+    if (ownership === "external" && session.completionEvidence !== "authoritative") {
+      await this.options.reply(message,
+        "该会话仅由本地文件发现，尚无权威完成事件。为避免与 VS Code/CLI 同时续写，请引用一条“已完成”通知后再回复。"
+      );
+      return;
+    }
     if (!session.sessionId.startsWith("new:")) {
       await this.options.registry.selectForChat(message.chatId, session);
     }
@@ -154,11 +216,15 @@ export class ReplyRouter {
     }
     void result.completion.catch(() => undefined);
     const waiting = session.status === "progress" || result.position > 1;
-    await this.options.reply(message,
+    const replyId = await this.options.reply(message,
       `${waiting ? "已排队" : "已接收"}：${formatSession(session)}\n`
       + `策略：${policy === "planOnly" ? "只读规划" : "继承本机权限"}`
+      + `\n会话：${ownership === "managed" ? "飞书托管" : "外部完成后续写"}`
       + `${waiting ? `\n队列位置：${result.position}` : ""}`
     );
+    if (replyId) {
+      await this.options.registry.recordMessageRoute(replyId, session);
+    }
   }
 
   private async resolveContextSession(message: InboundReplyContext): Promise<AgentSession | undefined> {
@@ -186,7 +252,13 @@ function formatSessions(sessions: AgentSession[]): string {
   }
   return [
     "最近会话：",
-    ...sessions.map((session, index) => `${index + 1}. ${formatSession(session)} · ${formatTime(session.lastSeenAt)}`),
+    ...sessions.map((session, index) => {
+      const ownership = session.ownership === "managed" ? "托管" : "外部";
+      const state = session.status === "progress"
+        ? "运行中"
+        : session.completionEvidence === "authoritative" ? "已确认完成" : "未确认完成";
+      return `${index + 1}. ${formatSession(session)} · ${ownership}/${state} · ${formatTime(session.lastSeenAt)}`;
+    }),
     "",
     "使用 /use <序号|别名|session-id> 选择，或 /send <目标> <内容> 直接发送。"
   ].join("\n");
@@ -211,6 +283,7 @@ function helpText(): string {
     "- /use <目标>：选择当前聊天使用的会话",
     "- /send <目标> <内容>：直接发送到指定会话",
     "- /new <codex|cc> <内容>：在当前 VS Code 工作区创建新会话",
+    "- /steer <内容>：追加到正在运行的托管 Codex turn",
     "- /alias <名称>：给当前会话设置别名",
     "- /status：查看连接和队列",
     "- /cancel：取消当前飞书聊天提交的任务",

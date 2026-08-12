@@ -94,3 +94,64 @@ test("supports session listing, selection, aliases, status, and inbound deduplic
   assert.equal(runner.jobs.at(-1)?.session.source, "claude-code");
   assert.match(runner.jobs.at(-1)?.session.sessionId ?? "", /^new:/);
 });
+
+test("rejects a file-discovered external session without an authoritative completion", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-router-discovered-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  await registry.recordDiscoveredSessions([{
+    source: "codex",
+    sessionId: "discovered-only",
+    cwd: process.cwd(),
+    project: "notifier",
+    lastSeenAt: new Date().toISOString(),
+    status: "completed",
+    ownership: "external",
+    completionEvidence: "discovered"
+  }]);
+  const runner = new ImmediateRunner();
+  const replies: string[] = [];
+  const router = new ReplyRouter({
+    registry,
+    queue: new AgentReplyQueue(runner),
+    policy: () => "planOnly",
+    refreshSessions: async () => undefined,
+    reply: async (_message, text) => { replies.push(text); },
+    status: () => "connected",
+    defaultWorkspace: () => ({ cwd: process.cwd(), project: "notifier" })
+  });
+  await router.handle(inbound({ messageId: "unsafe-send", parentMessageId: undefined, text: "/send discovered-only continue" }));
+  assert.equal(runner.jobs.length, 0);
+  assert.match(replies[0], /权威完成事件/);
+});
+
+test("creates Codex sessions through the managed-session factory", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-router-managed-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  const runner = new ImmediateRunner();
+  const replies: string[] = [];
+  const router = new ReplyRouter({
+    registry,
+    queue: new AgentReplyQueue(runner),
+    policy: () => "planOnly",
+    refreshSessions: async () => undefined,
+    reply: async (_message, text) => { replies.push(text); return "bot-managed"; },
+    status: () => "connected",
+    defaultWorkspace: () => ({ cwd: process.cwd(), project: "notifier" }),
+    createManagedCodexSession: async (cwd, project) => registry.recordManagedSession({
+      source: "codex",
+      sessionId: "managed-thread",
+      cwd,
+      project,
+      lastSeenAt: new Date().toISOString(),
+      status: "completed",
+      ownership: "managed",
+      completionEvidence: "authoritative",
+      managedBackend: "codex-app-server"
+    })
+  });
+  await router.handle(inbound({ messageId: "new-managed", parentMessageId: undefined, text: "/new codex inspect tests" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runner.jobs[0].session.sessionId, "managed-thread");
+  assert.equal(runner.jobs[0].session.ownership, "managed");
+  assert.equal((await registry.resolveMessage("bot-managed"))?.sessionId, "managed-thread");
+});

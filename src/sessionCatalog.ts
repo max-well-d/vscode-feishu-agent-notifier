@@ -109,7 +109,9 @@ async function parseCandidate(candidate: FileCandidate, now: Date): Promise<Agen
       cwd,
       project: cwd ? path.basename(cwd) : path.basename(path.dirname(candidate.filePath)),
       lastSeenAt: candidate.modifiedAt.toISOString(),
-      status: age >= 0 && age < 10_000 ? "progress" : "completed"
+      status: age >= 0 && age < 10_000 ? "progress" : "completed",
+      ownership: "external",
+      completionEvidence: "discovered"
     };
   } finally {
     await handle.close();

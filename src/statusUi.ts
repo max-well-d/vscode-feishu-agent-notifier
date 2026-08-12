@@ -29,6 +29,8 @@ export interface StatusSnapshot {
   inboundError?: string;
   remoteActive?: number;
   remotePending?: number;
+  codexManagedState?: "stopped" | "starting" | "ready" | "failed";
+  codexManagedError?: string;
 }
 
 export interface StatusPresentation {
@@ -123,7 +125,14 @@ function remoteDetail(snapshot: StatusSnapshot): string {
         : snapshot.inboundState === "failed"
           ? `失败${snapshot.inboundError ? `：${compact(snapshot.inboundError, 100)}` : ""}`
           : "未连接";
-  return `${policy}，${state}，运行 ${snapshot.remoteActive ?? 0} / 排队 ${snapshot.remotePending ?? 0}`;
+  const managed = snapshot.codexManagedState === "ready"
+    ? "Codex 托管已就绪"
+    : snapshot.codexManagedState === "starting"
+      ? "Codex 托管启动中"
+      : snapshot.codexManagedState === "failed"
+        ? `Codex 托管失败${snapshot.codexManagedError ? `：${compact(snapshot.codexManagedError, 80)}` : ""}`
+        : "Codex 托管按需启动";
+  return `${policy}，${state}，运行 ${snapshot.remoteActive ?? 0} / 排队 ${snapshot.remotePending ?? 0}，${managed}`;
 }
 
 function receiverDetail(snapshot: StatusSnapshot): string {

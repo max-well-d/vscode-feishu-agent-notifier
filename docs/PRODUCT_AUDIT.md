@@ -4,7 +4,7 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 
 ## Current readiness
 
-| Area | 0.12.0 status | Mature open-source expectation |
+| Area | 0.13.0 status | Mature open-source expectation |
 | --- | --- | --- |
 | Core message capture | Good | Capability-aware Claude MessageDisplay/transcript selection; Codex official Stop Hook plus notify and transcript fallbacks |
 | Delivery reliability | Good | Unicode-safe chunking, timeouts, bounded retry/backoff, token caching, deduplication, and an offline queue |
@@ -17,8 +17,8 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 | Cross-environment support | Partial | Local multi-window ownership and takeover are supported; WSL, SSH, Dev Containers, and cross-profile routing need dedicated end-to-end coverage |
 | Policy controls | Partial | Failure/local notification controls, workspace pause, and per-project destinations exist; project allow/deny rules, content redaction, and quiet hours are not yet implemented |
 | Observability/history | Partial | Logs and last result exist; a searchable delivery history, per-message attempt details, and exportable support bundle are future work |
-| Bidirectional control | Good | Opt-in application-bot long connection, exact quoted-message routing, local history selection, deny-by-default allowlists, bounded execution, and no permission bypass |
-| Remote session coverage | Partial | Local persisted Codex/Claude Code sessions are supported; active cross-client injection, cloud sessions, WSL/SSH/containers, and multi-device routing remain out of scope |
+| Bidirectional control | Good | Exact quoted-message routing including bot acknowledgements, managed Codex App Server sessions, deny-by-default allowlists, bounded execution, and no permission bypass |
+| Remote session coverage | Partial | Managed Codex sessions support authoritative state and steering; external sessions are completed-only, while cloud sessions, WSL/SSH/containers, and multi-device routing remain out of scope |
 
 ## Release gates
 
@@ -55,4 +55,4 @@ A stable release should satisfy all of these gates:
 - Optional signed, auto-start background companion for real-time delivery when VS Code is closed.
 - Additional destinations behind a provider interface, without weakening the Feishu-first setup.
 - Optional central relay for multiple computers, with device routing and end-to-end authenticated delivery.
-- Managed live Agent sessions with stable upstream APIs for mid-turn steering; existing external terminal/IDE sessions remain queue-only.
+- Move the Feishu receiver and managed Agent owner into an optional signed background companion so sessions survive VS Code reloads.

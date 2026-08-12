@@ -18,7 +18,8 @@ Feishu remote replies are disabled by default. Enabling them creates an authenti
 - Only application-bot mode is supported. The inbound WebSocket is authenticated with App ID / App Secret stored in VS Code `SecretStorage`.
 - `remoteAllowedUserOpenIds` is deny-by-default. Group messages also require an allowed `chat_id` and, by default, an explicit bot mention.
 - Quoted replies are resolved through a private, bounded `message_id` to session registry. Duplicate inbound message IDs are processed once.
-- Remote text is written to the Agent process over stdin and is never embedded in shell command strings or process arguments.
+- Remote text is written through Codex App Server JSON-RPC or Agent process stdin and is never embedded in shell command strings or process arguments.
+- Codex sessions created with `/new codex` have one App Server owner. External IDE/CLI sessions require an authoritative completion event before the extension can resume them; transcript modification time is not treated as completion evidence.
 - The extension never enables `dangerously-bypass-*`. `planOnly` selects the Codex read-only sandbox and Claude Code plan permission mode. `inherit` is explicitly opt-in and can modify files or execute commands according to the user's existing Agent configuration.
 - Jobs are serialized per session, globally limited, capped at 20 queued requests, cancellable, and terminated after the configured timeout.
 - Native approval prompts are not bridged to Feishu. A remote task that requires unavailable local approval must fail instead of silently escalating.
