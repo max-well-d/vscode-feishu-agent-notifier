@@ -42,6 +42,7 @@ import {
   RemoteExecutionPolicy
 } from "./types";
 import { parseIdList, validateIdListInput, validateReceiveIdInput } from "./remoteConfiguration";
+import { prepareDataDirectory, resolveDataDirectory } from "./dataDirectory";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
 const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
@@ -93,16 +94,16 @@ const recentEvents = new Map<string, number>();
 const recentMessageBodies = new Map<string, { timestamp: number; origin: AgentEvent["origin"] }>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  extensionStoragePath = context.globalStorageUri.fsPath;
   activeExtensionId = context.extension.id;
   output = vscode.window.createOutputChannel("Feishu Agent Notifier", { log: true });
+  extensionStoragePath = await initializeDataDirectory(context);
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
   statusBar.name = "Feishu Agent Notifier 状态";
   statusBar.command = "feishuAgentNotifier.showStatus";
   renderStatusBar();
   statusBar.show();
   context.subscriptions.push(output, statusBar);
-  sessionRegistry = new SessionRegistry(path.join(context.globalStorageUri.fsPath, "remote-sessions.json"));
+  sessionRegistry = new SessionRegistry(path.join(extensionStoragePath, "remote-sessions.json"));
   await migrateLegacySecrets(context);
   await migrateWorkspacePause(context);
   await refreshAgentExecutables();
@@ -123,6 +124,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.storeSecrets", () => storeSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.clearSecrets", () => clearSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.openSettings", openSettings),
+    vscode.commands.registerCommand("feishuAgentNotifier.configureDataDirectory", () => configureDataDirectory(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.configureRemoteControl", () => configureRemoteControl(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.showStatus", () => showStatus(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.toggleWorkspacePause", () => toggleWorkspacePause(context)),
@@ -135,12 +137,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (configurationWizardSaving || !event.affectsConfiguration("feishuAgentNotifier")) {
         return;
       }
+      if (event.affectsConfiguration("feishuAgentNotifier.dataDirectory")) {
+        const selection = await vscode.window.showInformationMessage(
+          "本地数据目录已修改。重载窗口后迁移会话索引、暂停状态和离线队列。",
+          "立即重载"
+        );
+        if (selection === "立即重载") {
+          await vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+        return;
+      }
       await deployHelper(context);
       await restartServer(context);
     })
   );
 
   await deployHelper(context);
+  await refreshInstalledHookPaths(context);
   await restartServer(context);
 }
 
@@ -824,7 +837,12 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
     const helperPath = helperDestination(context);
     const tokenFilePath = hookTokenDestination(context);
     const port = getSetting<number>("port", 37561);
-    const result = await installHooks({ helperPath, tokenFilePath, port });
+    const result = await installHooks({
+      helperPath,
+      tokenFilePath,
+      spoolDirectory: pendingDirectory(),
+      port
+    });
     await restartServer(context);
     output?.info(`Codex notify: ${result.codexPath}`);
     output?.info(`Codex Stop Hook: ${result.codexHooksPath}`);
@@ -1025,11 +1043,35 @@ async function deployHelper(context: vscode.ExtensionContext): Promise<void> {
   const destination = helperDestination(context);
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.copyFile(context.asAbsolutePath(path.join("scripts", "agent-hook.cjs")), destination);
-  const disabledMarker = path.join(context.globalStorageUri.fsPath, "offline-queue-disabled");
+  const disabledMarker = path.join(extensionStoragePath, "offline-queue-disabled");
+  await fs.mkdir(extensionStoragePath, { recursive: true });
   if (getSetting<boolean>("queueWhenOffline", true)) {
     await fs.rm(disabledMarker, { force: true });
   } else {
     await fs.writeFile(disabledMarker, "disabled\n", "utf8");
+  }
+}
+
+async function refreshInstalledHookPaths(context: vscode.ExtensionContext): Promise<void> {
+  if (process.env.FEISHU_AGENT_NOTIFIER_TEST === "1") {
+    return;
+  }
+  try {
+    const inspection = await inspectHooks();
+    if (!inspection.codexInstalled
+      && !inspection.claudeStopInstalled
+      && !inspection.claudeStopFailureInstalled
+      && !inspection.claudeMessageDisplayInstalled) {
+      return;
+    }
+    await installHooks({
+      helperPath: helperDestination(context),
+      tokenFilePath: hookTokenDestination(context),
+      spoolDirectory: pendingDirectory(),
+      port: getSetting<number>("port", 37561)
+    });
+  } catch (error) {
+    output?.warn(`更新 Hook 数据目录失败：${(error as Error).message}`);
   }
 }
 
@@ -1062,6 +1104,68 @@ async function getOrCreateHookToken(context: vscode.ExtensionContext): Promise<s
 
 function getSetting<T>(key: string, fallback: T): T {
   return vscode.workspace.getConfiguration("feishuAgentNotifier").get<T>(key, fallback);
+}
+
+async function initializeDataDirectory(context: vscode.ExtensionContext): Promise<string> {
+  const defaultPath = context.globalStorageUri.fsPath;
+  const markerPath = path.join(defaultPath, "data-directory");
+  await fs.mkdir(defaultPath, { recursive: true });
+  try {
+    const targetPath = resolveDataDirectory(getSetting<string>("dataDirectory", ""), defaultPath);
+    const previousPath = await fs.readFile(markerPath, "utf8")
+      .then((value) => value.trim() || defaultPath)
+      .catch(() => defaultPath);
+    const first = await prepareDataDirectory(previousPath, targetPath);
+    const second = path.resolve(previousPath) === path.resolve(defaultPath)
+      ? { migrated: [], retained: [] }
+      : await prepareDataDirectory(defaultPath, targetPath);
+    const migrated = [...first.migrated, ...second.migrated];
+    const retained = [...first.retained, ...second.retained];
+    await fs.writeFile(markerPath, `${targetPath}\n`, { encoding: "utf8", mode: 0o600 });
+    if (process.platform !== "win32") {
+      await fs.chmod(markerPath, 0o600);
+    }
+    output?.info(`本地数据目录：${targetPath}`);
+    if (migrated.length > 0) {
+      output?.info(`已迁移本地数据：${[...new Set(migrated)].join("、")}`);
+    }
+    if (retained.length > 0) {
+      output?.warn(`目标目录已有同名数据，未覆盖：${[...new Set(retained)].join("、")}`);
+    }
+    return targetPath;
+  } catch (error) {
+    output?.error(`自定义数据目录不可用，已回退到 VS Code 扩展私有目录：${(error as Error).message}`);
+    void vscode.window.showErrorMessage(`Feishu Agent Notifier 自定义数据目录不可用：${(error as Error).message}`);
+    await prepareDataDirectory(defaultPath, defaultPath);
+    return defaultPath;
+  }
+}
+
+async function configureDataDirectory(context: vscode.ExtensionContext): Promise<void> {
+  const selected = await vscode.window.showOpenDialog({
+    title: "选择 Feishu Agent Notifier 本地数据目录",
+    defaultUri: vscode.Uri.file(extensionStoragePath),
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: "使用此目录"
+  });
+  if (!selected?.[0]) {
+    return;
+  }
+  const targetPath = resolveDataDirectory(selected[0].fsPath, context.globalStorageUri.fsPath);
+  await fs.mkdir(targetPath, { recursive: true });
+  configurationWizardSaving = true;
+  try {
+    await vscode.workspace.getConfiguration("feishuAgentNotifier")
+      .update("dataDirectory", targetPath, vscode.ConfigurationTarget.Global);
+  } finally {
+    configurationWizardSaving = false;
+  }
+  await vscode.window.showInformationMessage(
+    `本地数据目录已设为 ${targetPath}。窗口将重载并迁移现有数据；凭据仍保存在 SecretStorage。`
+  );
+  await vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
 async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void> {
@@ -1174,7 +1278,7 @@ function renderStatusBar(): void {
 }
 
 interface StatusActionItem extends vscode.QuickPickItem {
-  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "remoteConfig" | "sessions" | "cancelRemote" | "settings" | "logs";
+  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "remoteConfig" | "dataDirectory" | "sessions" | "cancelRemote" | "settings" | "logs";
 }
 
 async function showStatus(context: vscode.ExtensionContext): Promise<void> {
@@ -1194,6 +1298,7 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       ? [{ label: `$(sync) 重试 ${statusSnapshot.pendingCount} 条待处理通知`, action: "retry" as const }]
       : []),
     { label: "$(remote) 配置飞书远程操控", description: "权限、目标和白名单向导", action: "remoteConfig" },
+    { label: "$(folder) 选择本地数据目录", description: extensionStoragePath, action: "dataDirectory" },
     { label: "$(list-tree) 查看本地 Agent 会话", action: "sessions" },
     ...((agentReplyQueue?.activeCount ?? 0) + (agentReplyQueue?.pendingCount ?? 0) > 0
       ? [{ label: "$(stop-circle) 取消远程回复任务", action: "cancelRemote" as const }]
@@ -1230,6 +1335,9 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       break;
     case "remoteConfig":
       await configureRemoteControl(context);
+      break;
+    case "dataDirectory":
+      await configureDataDirectory(context);
       break;
     case "sessions":
       await showRemoteSessions(context);
@@ -1333,6 +1441,7 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
   });
   logAgentCapabilities();
   const checks: string[] = [];
+  checks.push(checkLine("本地数据目录", true, extensionStoragePath));
   checks.push(checkLine("扩展已启用", getSetting<boolean>("enabled", true)));
   checks.push(checkLine("消息投递时机", true,
     getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime"

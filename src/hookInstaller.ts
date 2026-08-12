@@ -7,6 +7,7 @@ export const NOTIFIER_MARKER = "feishu-agent-notifier-v1";
 export interface InstallHooksOptions {
   helperPath: string;
   tokenFilePath: string;
+  spoolDirectory?: string;
   port: number;
   homeDirectory?: string;
 }
@@ -143,6 +144,9 @@ export function mergeCodexNotify(configText: string, options: InstallHooksOption
     "--source", "codex",
     "--notifier-id", NOTIFIER_MARKER
   ];
+  if (options.spoolDirectory) {
+    command.push("--spool", options.spoolDirectory);
+  }
   const assignment = `notify = ${JSON.stringify(command)}`;
   const existing = findRootNotifyAssignment(configText);
 
@@ -209,6 +213,9 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
       "--source", "claude-code",
       "--notifier-id", NOTIFIER_MARKER
     ];
+    if (options.spoolDirectory) {
+      args.push("--spool", options.spoolDirectory);
+    }
     if (eventName === "MessageDisplay") {
       args.push("--queue-offline", "false");
     }
@@ -227,14 +234,18 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
 
 function buildCodexHookCommand(options: InstallHooksOptions, windows: boolean): string {
   const quote = windows ? quoteWindowsArgument : quotePosixArgument;
-  return [
+  const command = [
     "node",
     quote(options.helperPath),
     "--port", String(options.port),
     "--token-file", quote(options.tokenFilePath),
     "--source", "codex",
     "--notifier-id", NOTIFIER_MARKER
-  ].join(" ");
+  ];
+  if (options.spoolDirectory) {
+    command.push("--spool", quote(options.spoolDirectory));
+  }
+  return command.join(" ");
 }
 
 function quotePosixArgument(value: string): string {

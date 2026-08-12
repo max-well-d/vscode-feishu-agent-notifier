@@ -48,7 +48,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.14.0.vsix
+code --install-extension .\feishu-agent-notifier-0.14.1.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -76,6 +76,18 @@ code --install-extension .\feishu-agent-notifier-0.14.0.vsix
 “暂停当前工作区通知”只过滤工作目录属于当前工作区的 Agent 事件，不会关闭全局接收器，也不会影响其他项目。暂停列表在同一 VS Code Profile 的窗口之间共享，因此接收器所有者也会执行其他窗口发出的暂停操作。暂停期间匹配的实时事件会跳过；已经进入离线队列的消息会保留到恢复后再投递。
 
 非敏感选项可直接在 VS Code 设置界面填写。Webhook、签名密钥、App ID 和 App Secret 只通过“安全保存飞书凭据”命令写入 SecretStorage；从旧版本升级时，遗留的明文凭据会自动迁移并清除。
+
+### 本地数据目录
+
+扩展不访问 Windows 注册表。代码中的 `SessionRegistry` 只是受容量和有效期限制的 JSON 会话路由索引。
+
+在设置页填写 `feishuAgentNotifier.dataDirectory`，或从右下角状态菜单选择“选择本地数据目录”，可以把以下普通文件迁移到自定义位置：
+
+- `remote-sessions.json`：会话 ID、名称、工作目录、消息路由和远程分支映射；不保存对话 transcript 或完整远程指令正文。
+- `paused-workspaces.json`：暂停通知的工作区列表。
+- `pending-events/`：仅在离线队列启用时暂存完整待投递事件；不希望回复正文落盘时可关闭 `queueWhenOffline`。
+
+路径必须是绝对路径或以 `~/` 开头。修改后窗口会重载；跨磁盘迁移也受支持，并且不会覆盖目标目录已有的同名数据。Hook 运行脚本、随机接收令牌和一个最小的数据目录定位文件仍位于 VS Code 私有目录，飞书凭据继续只存入 `SecretStorage`。
 
 ### Webhook 模式
 
@@ -128,7 +140,7 @@ code --install-extension .\feishu-agent-notifier-0.14.0.vsix
 
 外部 Codex 会话会严格沿用通知中记录的原始工作目录。若该目录不是 Git 工作树，扩展只对“权威完成且精确绑定”的既有会话续写加入 Codex 官方 `--skip-git-repo-check` 兼容参数；不会切换到某个子仓库，也不会因此改变 `planOnly` / `inherit` 权限策略。
 
-若 Codex 返回 `already has an active writer`，扩展不会终止 IDE App Server。v0.14.0 会使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入扩展私有注册表。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时不会自动猜测。
+若 Codex 返回 `already has an active writer`，扩展不会终止 IDE App Server。v0.14.0 起会使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入私有 JSON 会话索引。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时不会自动猜测。
 
 扩展不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 必须保持运行；同一个飞书 App ID 应只在一台电脑上启用入站连接，因为飞书长连接的多个客户端采用集群分发而不是广播。
 
@@ -165,7 +177,7 @@ Codex 官方 `Stop` Hook 会直接提供最后一条 assistant 回复。非托�
 
 `watchCodexIde` 控制 completion 模式下的 Codex IDE transcript 完成监听；实时模式必须启用 Codex transcript 监听，因此该模式下此开关不会关闭实时消息。
 
-扩展或 VS Code 没有运行时，本地接收器不可用。默认情况下，转发脚本会把完整事件写入扩展的私有 `globalStorage/pending-events` 目录，VS Code 下次启动后自动补投并显示本地提醒；Codex/Claude Code 本身不会被阻塞。可关闭 `queueWhenOffline`，关闭后离线事件会被丢弃且不会把回复正文暂存到磁盘。
+扩展或 VS Code 没有运行时，本地接收器不可用。默认情况下，转发脚本会把完整事件写入当前 `<dataDirectory>/pending-events`，VS Code 下次启动后自动补投并显示本地提醒；未配置自定义目录时才使用扩展私有 `globalStorage`。Codex/Claude Code 本身不会被阻塞。可关闭 `queueWhenOffline`，关闭后离线事件会被丢弃且不会把回复正文暂存到磁盘。
 
 离线队列解决的是“不丢最终消息”，不是 VS Code 关闭后的实时逐条发送。Claude `MessageDisplay` 分片不会离线落盘，避免保存无法独立还原的碎片；`Stop` 仍会保存完整最终消息。若必须在 VS Code 完全退出时仍逐条推送，需要单独运行受保护的后台服务；本扩展当前不安装常驻系统服务。
 

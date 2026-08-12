@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -49,6 +49,7 @@
     "onCommand:feishuAgentNotifier.storeSecrets",
     "onCommand:feishuAgentNotifier.clearSecrets",
     "onCommand:feishuAgentNotifier.openSettings",
+    "onCommand:feishuAgentNotifier.configureDataDirectory",
     "onCommand:feishuAgentNotifier.configureRemoteControl",
     "onCommand:feishuAgentNotifier.showStatus",
     "onCommand:feishuAgentNotifier.toggleWorkspacePause",
@@ -88,6 +89,10 @@
       {
         "command": "feishuAgentNotifier.openSettings",
         "title": "飞书 Agent 通知：打开设置"
+      },
+      {
+        "command": "feishuAgentNotifier.configureDataDirectory",
+        "title": "飞书 Agent 通知：选择本地数据目录"
       },
       {
         "command": "feishuAgentNotifier.configureRemoteControl",
@@ -313,6 +318,13 @@
           "scope": "machine",
           "order": 32,
           "description": "可选的项目路由：键为项目名或绝对路径，值为飞书 chat_id；仅应用机器人模式生效。"
+        },
+        "feishuAgentNotifier.dataDirectory": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "order": 33,
+          "description": "会话路由索引、暂停状态和离线队列的本地数据目录。必须为绝对路径或以 ~/ 开头；留空时使用 VS Code 扩展私有目录。修改后需要重载窗口。凭据和接收令牌不写入此目录。"
         },
         "feishuAgentNotifier.port": {
           "type": "integer",

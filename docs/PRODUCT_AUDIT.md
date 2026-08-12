@@ -4,11 +4,12 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 
 ## Current readiness
 
-| Area | 0.14.0 status | Mature open-source expectation |
+| Area | 0.14.1 status | Mature open-source expectation |
 | --- | --- | --- |
 | Core message capture | Good | Capability-aware Claude MessageDisplay/transcript selection; Codex official Stop Hook plus notify and transcript fallbacks |
 | Delivery reliability | Good | Unicode-safe chunking, timeouts, bounded retry/backoff, token caching, deduplication, and an offline queue |
 | Credential security | Good | SecretStorage, automatic migration from legacy plaintext settings, loopback-only authenticated receiver |
+| Local data control | Good | Configurable data directory, cross-volume migration, bounded metadata, optional offline-body persistence, and no Windows Registry dependency |
 | Onboarding | Good | Walkthrough, secure credential wizard, test commands, hook installer, and self-diagnostics |
 | Diagnostics | Good | Version/capability-aware status center, receiver ownership, config/hook/queue checks, redacted report, logs, and repair commands |
 | Automated quality | Good | Unit/process tests on Windows/Linux, Extension Host activation tests, package-content check, reproducible tag release workflow |

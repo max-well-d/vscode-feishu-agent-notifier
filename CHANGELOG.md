@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.1
+
+- Add a visual local data-directory picker and the `feishuAgentNotifier.dataDirectory` setting for session routing metadata, pause state, and the offline queue.
+- Migrate bounded user data across directories and volumes without overwriting an existing destination; keep only a minimal location pointer in VS Code private storage.
+- Keep Feishu credentials in VS Code `SecretStorage`, and keep the Hook runtime plus receiver token separate from the configurable data directory.
+- Update installed Codex and Claude Code Hooks to send offline events directly to the selected queue directory.
+- Clarify that the internal `SessionRegistry` is a private JSON index and never accesses the Windows Registry.
+- Extend automated coverage to 93 unit/process tests.
+
 ## 0.14.0
 
 - Automatically fall back from an active-writer conflict to a persistent Codex App Server `thread/fork` anchored at the exact quoted completed turn.

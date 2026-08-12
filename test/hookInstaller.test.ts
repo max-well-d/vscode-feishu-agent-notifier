@@ -18,6 +18,7 @@ import {
 const options = {
   helperPath: "C:\\Users\\me\\global storage\\feishu-agent-notifier-hook.cjs",
   tokenFilePath: "C:\\Users\\me\\global storage\\receiver-token",
+  spoolDirectory: "F:\\Feishu Agent Notifier\\pending-events",
   port: 37561,
 };
 
@@ -73,6 +74,7 @@ test("merges an official Codex Stop hook without removing unrelated hooks", () =
   assert.equal(document.hooks.Stop.length, 2);
   assert.equal(document.hooks.Stop[0].hooks[0].command, "keep-me");
   assert.match(document.hooks.Stop[1].hooks[0].command, /--token-file/);
+  assert.match(document.hooks.Stop[1].hooks[0].command, /--spool/);
   assert.doesNotMatch(document.hooks.Stop[1].hooks[0].command, /abc123/);
   assert.match(document.hooks.Stop[1].hooks[0].commandWindows, new RegExp(NOTIFIER_MARKER));
 });
@@ -86,6 +88,7 @@ test("merges Claude completion and MessageDisplay hooks idempotently", () => {
   assert.equal(document.hooks.StopFailure.length, 1);
   assert.equal(document.hooks.MessageDisplay.length, 1);
   assert.ok(document.hooks.Stop[0].hooks[0].args.includes(NOTIFIER_MARKER));
+  assert.ok(document.hooks.Stop[0].hooks[0].args.includes(options.spoolDirectory));
   assert.deepEqual(
     document.hooks.MessageDisplay[0].hooks[0].args.slice(-2),
     ["--queue-offline", "false"]

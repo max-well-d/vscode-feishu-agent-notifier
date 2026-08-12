@@ -8,7 +8,9 @@ In realtime mode, the extension reads local Codex transcripts and receives Claud
 
 - Feishu credentials are stored in VS Code `SecretStorage`. Upgrades automatically migrate legacy plaintext credential settings into `SecretStorage` and remove those settings from the public configuration UI.
 - The local receiver binds only to `127.0.0.1` and requires a random per-installation token. Hook configuration contains only the path to a token file under the extension's private storage; the token is not embedded in command arguments, and POSIX systems use file mode `0600`.
-- When offline queuing is enabled, complete Agent events are temporarily stored in the extension's private `globalStorage` directory. Disable `feishuAgentNotifier.queueWhenOffline` if replies must never be written to disk.
+- The extension does not read or write the Windows Registry. `SessionRegistry` is only the internal name of a bounded JSON routing index.
+- Session routing metadata, pause state, and the offline queue use `feishuAgentNotifier.dataDirectory` when configured. VS Code private storage retains only the Hook runtime, receiver token, and a small data-directory locator; credentials remain in `SecretStorage`.
+- When offline queuing is enabled, complete Agent events are temporarily stored under `<dataDirectory>/pending-events`. Disable `feishuAgentNotifier.queueWhenOffline` if replies must never be written to disk.
 - Diagnostic reports omit credentials, receiver tokens, and Agent response content.
 
 ## Remote reply threat model
@@ -17,16 +19,16 @@ Feishu remote replies are disabled by default. Enabling them creates an authenti
 
 - Only application-bot mode is supported. The inbound WebSocket is authenticated with App ID / App Secret stored in VS Code `SecretStorage`.
 - `remoteAllowedUserOpenIds` is deny-by-default. Group messages also require an allowed `chat_id` and, by default, an explicit bot mention.
-- Quoted replies are resolved through a private, bounded `message_id` to session registry. Duplicate inbound message IDs are processed once.
+- Quoted replies are resolved through a private, bounded `message_id` to session index. Duplicate inbound message IDs are processed once.
 - Remote text is written through Codex App Server JSON-RPC or Agent process stdin and is never embedded in shell command strings or process arguments.
 - Codex sessions created with `/new codex` have one App Server owner. External IDE/CLI sessions require an authoritative completion event before the extension can resume them; transcript modification time is not treated as completion evidence.
 - The extension never enables `dangerously-bypass-*`. `planOnly` selects the Codex read-only sandbox and Claude Code plan permission mode. `inherit` is explicitly opt-in and can modify files or execute commands according to the user's existing Agent configuration.
 - For an external Codex session with authoritative completion evidence, the extension may add the public `--skip-git-repo-check` flag when the exact persisted working directory has no `.git` ancestor. This only bypasses repository presence validation; it does not change the sandbox or approval policy and is never used for discovered, managed, or new sessions.
 - If an exact completed Codex turn cannot be resumed because another App Server owns the writer lock, the extension may create a persistent managed `thread/fork` at that exact turn. It never kills the existing owner, never forks a route without a persisted `turnId`, and preserves the selected `planOnly` or `inherit` policy.
-- Registry v3 persists the source-session/source-turn to managed-branch mapping and the user-facing session name. Quoting the original completion card after a reload resolves to the same managed branch instead of creating another fork.
+- Session-index schema v3 persists the source-session/source-turn to managed-branch mapping and the user-facing session name. Quoting the original completion card after a reload resolves to the same managed branch instead of creating another fork.
 - Jobs are serialized per session, globally limited, capped at 20 queued requests, cancellable, and terminated after the configured timeout.
 - Native approval prompts are not bridged to Feishu. A remote task that requires unavailable local approval must fail instead of silently escalating.
-- Session routing metadata is stored under extension `globalStorage` with private POSIX permissions. It contains local paths and session IDs but not Feishu credentials or full remote prompt bodies.
+- Session routing metadata is stored in `remote-sessions.json` under the selected data directory with private POSIX permissions. It contains local paths, session IDs, bounded message routes, and branch mappings, but not Feishu credentials, conversation transcripts, or full remote prompt bodies.
 
 Use a dedicated application and minimum Feishu permissions. Prefer single-user chat or the group @bot event permission; do not grant full group-message read access. Use one inbound-enabled computer per App ID because Feishu distributes a long-connection event to one client rather than broadcasting it.
 
