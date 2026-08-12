@@ -12,6 +12,8 @@
 - Declare local UI extension behavior and trusted/untrusted and virtual workspace capabilities.
 - Add repository, support, security, contribution, and product-readiness documentation.
 - Add Windows/Linux CI, VSIX content checks, and tag-based GitHub Release automation.
+- Add an isolated VS Code Extension Host integration test for activation, commands, and safe defaults.
+- Normalize Windows and POSIX project paths consistently across host platforms.
 
 ## 0.5.0
 

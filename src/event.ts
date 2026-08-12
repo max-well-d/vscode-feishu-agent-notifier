@@ -35,10 +35,20 @@ export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
     sessionId: stringValue(input["thread-id"]) || stringValue(input.session_id),
     turnId: stringValue(input["turn-id"]) || stringValue(input.turn_id) || stringValue(input.prompt_id),
     cwd,
-    project: cwd ? path.basename(cwd) : "unknown-project",
+    project: projectNameFromCwd(cwd),
     message,
     occurredAt: new Date().toISOString()
   };
+}
+
+export function projectNameFromCwd(cwd: string): string {
+  if (!cwd) {
+    return "unknown-project";
+  }
+  const withoutTrailingSeparators = cwd.replace(/[\\/]+$/, "");
+  return withoutTrailingSeparators.includes("\\")
+    ? path.win32.basename(withoutTrailingSeparators)
+    : path.posix.basename(withoutTrailingSeparators);
 }
 
 export function eventDeduplicationKey(event: AgentEvent): string {

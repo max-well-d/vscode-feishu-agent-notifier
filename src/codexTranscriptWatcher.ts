@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentEvent } from "./types";
+import { projectNameFromCwd } from "./event";
 
 interface FileState {
   offset: number;
@@ -215,7 +216,7 @@ export function parseCodexTranscriptLine(
     sessionId: sessionIdFromPath(filePath),
     turnId,
     cwd,
-    project: cwd ? path.basename(cwd) : "unknown-project",
+    project: projectNameFromCwd(cwd),
     message,
     occurredAt: typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString()
   };

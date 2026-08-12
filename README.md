@@ -30,6 +30,7 @@
 cd vscode-feishu-agent-notifier
 npm install
 npm test
+npm run test:integration
 npm run package
 code --install-extension .\feishu-agent-notifier-0.6.0.vsix
 ```

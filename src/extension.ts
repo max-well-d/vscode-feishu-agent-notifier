@@ -89,7 +89,8 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   }
 
   const token = await getOrCreateHookToken(context);
-  const port = getSetting<number>("port", 37561);
+  const integrationTest = process.env.FEISHU_AGENT_NOTIFIER_TEST === "1";
+  const port = integrationTest ? 0 : getSetting<number>("port", 37561);
   const sender = new FeishuSender();
   hookServer = new LocalHookServer(token, async (event) => {
     enqueueEvent(context, sender, event);
@@ -99,7 +100,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
     await hookServer.start(port);
     output?.info(`本地 Hook 接收器正在监听 127.0.0.1:${port}`);
     void retryPendingEvents(context, false);
-    if (getSetting<boolean>("watchCodexIde", true)) {
+    if (!integrationTest && getSetting<boolean>("watchCodexIde", true)) {
       codexTranscriptWatcher = new CodexTranscriptWatcher(
         async (event) => enqueueEvent(context, sender, event),
         vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),

@@ -33,7 +33,8 @@ export class LocalHookServer {
     });
 
     this.server = server;
-    this.activePort = port;
+    const address = server.address();
+    this.activePort = address && typeof address === "object" ? address.port : port;
   }
 
   public async stop(): Promise<void> {

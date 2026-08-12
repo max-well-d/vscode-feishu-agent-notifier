@@ -36,10 +36,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Run Extension Host integration tests
+        run: xvfb-run -a npm run test:integration
       - run: npm run package -- --out feishu-agent-notifier-ci.vsix
       - uses: actions/upload-artifact@v4
         with:
           name: feishu-agent-notifier-vsix
           path: feishu-agent-notifier-ci.vsix
           if-no-files-found: error
-

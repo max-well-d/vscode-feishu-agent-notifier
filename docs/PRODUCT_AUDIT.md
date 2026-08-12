@@ -11,7 +11,7 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 | Credential security | Good | SecretStorage, automatic migration from legacy plaintext settings, loopback-only authenticated receiver |
 | Onboarding | Good | Walkthrough, secure credential wizard, test commands, hook installer, and self-diagnostics |
 | Diagnostics | Good | Receiver/config/hook/queue checks and a redacted report; logs and actionable repair commands |
-| Automated quality | Good | Unit and process-level tests on Windows/Linux, package-content check, reproducible tag release workflow |
+| Automated quality | Good | Unit/process tests on Windows/Linux, Extension Host activation tests, package-content check, reproducible tag release workflow |
 | Marketplace readiness | Partial | Repository metadata is present, but a verified VS Code Marketplace publisher, icon, screenshots, localization, and store listing are still required |
 | Native background delivery | Partial | Events are preserved while VS Code is closed, but real-time sending waits until VS Code starts; a separate background service would be required for true always-on delivery |
 | Cross-environment support | Partial | Local UI extension behavior is explicit; WSL, SSH, Dev Containers, multiple profiles, and portable hook paths need dedicated end-to-end coverage |
@@ -34,7 +34,7 @@ A stable release should satisfy all of these gates:
 ### P0 — before broad distribution
 
 - Validate upgrade behavior from 0.4/0.5 on real Windows and Linux profiles.
-- Add VS Code Extension Host integration tests for activation, commands, SecretStorage migration, and configuration changes.
+- Extend VS Code Extension Host coverage to SecretStorage migration and live configuration changes.
 - Add Marketplace publisher identity, branded PNG icon, screenshots, and a privacy disclosure in the listing.
 
 ### P1 — professional product depth
