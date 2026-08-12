@@ -4,7 +4,7 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 
 ## Current readiness
 
-| Area | 0.10.0 status | Mature open-source expectation |
+| Area | 0.12.0 status | Mature open-source expectation |
 | --- | --- | --- |
 | Core message capture | Good | Capability-aware Claude MessageDisplay/transcript selection; Codex official Stop Hook plus notify and transcript fallbacks |
 | Delivery reliability | Good | Unicode-safe chunking, timeouts, bounded retry/backoff, token caching, deduplication, and an offline queue |
@@ -15,8 +15,10 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 | Marketplace readiness | Partial | Repository metadata is present, but a verified VS Code Marketplace publisher, icon, screenshots, localization, and store listing are still required |
 | Native background delivery | Partial | Every assistant text is near-realtime while VS Code runs; when it is closed only final Hook events can be queued, so a separate background watcher is required for always-on realtime delivery |
 | Cross-environment support | Partial | Local multi-window ownership and takeover are supported; WSL, SSH, Dev Containers, and cross-profile routing need dedicated end-to-end coverage |
-| Policy controls | Partial | Failure/local notification controls and workspace pause exist; project allow/deny rules, content redaction, quiet hours, and destination routing are not yet implemented |
+| Policy controls | Partial | Failure/local notification controls, workspace pause, and per-project destinations exist; project allow/deny rules, content redaction, and quiet hours are not yet implemented |
 | Observability/history | Partial | Logs and last result exist; a searchable delivery history, per-message attempt details, and exportable support bundle are future work |
+| Bidirectional control | Good | Opt-in application-bot long connection, exact quoted-message routing, local history selection, deny-by-default allowlists, bounded execution, and no permission bypass |
+| Remote session coverage | Partial | Local persisted Codex/Claude Code sessions are supported; active cross-client injection, cloud sessions, WSL/SSH/containers, and multi-device routing remain out of scope |
 
 ## Release gates
 
@@ -29,6 +31,7 @@ A stable release should satisfy all of these gates:
 5. Every automatic notification can be disabled or scoped, and repeated errors do not create an attention storm.
 6. Windows and Linux CI pass; the built VSIX contains only runtime files and user documentation.
 7. README, changelog, privacy/security notes, support links, version/tag, and downloadable artifact agree.
+8. Remote replies reject unknown users/chats, deduplicate event IDs, never put prompts in argv, serialize per session, and cannot add bypass flags.
 
 ## Prioritized roadmap
 
@@ -41,7 +44,7 @@ A stable release should satisfy all of these gates:
 
 ### P1 — mature open-source tool depth
 
-- Project/source filters, quiet hours, configurable redaction, and per-project destinations.
+- Project/source filters, quiet hours, and configurable redaction. Per-project application-bot destinations are available in 0.12.0.
 - Delivery history with retry/discard actions and queue retention/size controls.
 - WSL/SSH/Dev Container-aware hook installation and profile selection.
 - English and Simplified Chinese package localization.
@@ -51,4 +54,5 @@ A stable release should satisfy all of these gates:
 
 - Optional signed, auto-start background companion for real-time delivery when VS Code is closed.
 - Additional destinations behind a provider interface, without weakening the Feishu-first setup.
-- Optional inbound commands with explicit authentication, allowlists, confirmation, and audit logs.
+- Optional central relay for multiple computers, with device routing and end-to-end authenticated delivery.
+- Managed live Agent sessions with stable upstream APIs for mid-turn steering; existing external terminal/IDE sessions remain queue-only.

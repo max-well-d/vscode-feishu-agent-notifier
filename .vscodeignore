@@ -7,6 +7,8 @@ package-lock.json
 src/**
 test/**
 out/test/**
+out/**
+dist/**/*.js.map
 node_modules/**
 tsconfig.json
 **/*.js.map

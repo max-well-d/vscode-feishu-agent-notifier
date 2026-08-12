@@ -1,4 +1,4 @@
-import { DeliveryMode, DeliveryTiming } from "./types";
+import { DeliveryMode, DeliveryTiming, RemoteExecutionPolicy } from "./types";
 
 export interface StatusSnapshot {
   initializing: boolean;
@@ -24,6 +24,11 @@ export interface StatusSnapshot {
   claudeSource?: "message-display" | "transcript" | "probing";
   lastDeliverySuccess?: string;
   lastDeliveryError?: string;
+  remoteExecutionPolicy?: RemoteExecutionPolicy;
+  inboundState?: "idle" | "connecting" | "connected" | "reconnecting" | "failed";
+  inboundError?: string;
+  remoteActive?: number;
+  remotePending?: number;
 }
 
 export interface StatusPresentation {
@@ -56,6 +61,13 @@ export function buildStatusPresentation(snapshot: StatusSnapshot): StatusPresent
   if (!snapshot.configurationOk) {
     return presentation("$(gear) 飞书 · 需要配置", "warning", "飞书凭据或目标配置不完整", details);
   }
+  if (snapshot.remoteExecutionPolicy !== "disabled" && snapshot.inboundState === "failed") {
+    return presentation("$(error) 飞书 · 入站异常", "error", "飞书远程回复连接失败", details);
+  }
+  if (snapshot.remoteExecutionPolicy !== "disabled"
+    && (snapshot.inboundState === "connecting" || snapshot.inboundState === "reconnecting")) {
+    return presentation("$(sync~spin) 飞书 · 重连中", "warning", "飞书远程回复正在连接", details);
+  }
   if (snapshot.activeDeliveries > 0) {
     return presentation("$(sync~spin) 飞书 · 发送中", "normal", "正在发送飞书通知", details);
   }
@@ -70,6 +82,9 @@ export function buildStatusPresentation(snapshot: StatusSnapshot): StatusPresent
       details
     );
   }
+  if (snapshot.inboundState === "connected") {
+    return presentation("$(comment-discussion) 飞书 · 双向", "normal", "通知与远程回复已就绪", details);
+  }
   return snapshot.deliveryTiming === "realtime"
     ? presentation("$(radio-tower) 飞书 · 实时", "normal", "实时逐条通知已就绪", details)
     : presentation("$(bell) 飞书 · 仅结束", "normal", "任务结束通知已就绪", details);
@@ -82,7 +97,8 @@ function buildDetails(snapshot: StatusSnapshot): string[] {
     `本地接收器：${receiverDetail(snapshot)}`,
     `Codex：${codexDetail(snapshot)}`,
     `Claude Code：${claudeDetail(snapshot)}`,
-    `待处理通知：${snapshot.pendingCount}`
+    `待处理通知：${snapshot.pendingCount}`,
+    `远程回复：${remoteDetail(snapshot)}`
   ];
   if (snapshot.lastDeliverySuccess) {
     details.push(`最近成功：${formatTime(snapshot.lastDeliverySuccess)}`);
@@ -91,6 +107,23 @@ function buildDetails(snapshot: StatusSnapshot): string[] {
     details.push(`最近错误：${compact(snapshot.lastDeliveryError, 180)}`);
   }
   return details;
+}
+
+function remoteDetail(snapshot: StatusSnapshot): string {
+  if (!snapshot.remoteExecutionPolicy || snapshot.remoteExecutionPolicy === "disabled") {
+    return "已禁用";
+  }
+  const policy = snapshot.remoteExecutionPolicy === "planOnly" ? "只读规划" : "继承本机权限";
+  const state = snapshot.inboundState === "connected"
+    ? "已连接"
+    : snapshot.inboundState === "connecting"
+      ? "连接中"
+      : snapshot.inboundState === "reconnecting"
+        ? "重连中"
+        : snapshot.inboundState === "failed"
+          ? `失败${snapshot.inboundError ? `：${compact(snapshot.inboundError, 100)}` : ""}`
+          : "未连接";
+  return `${policy}，${state}，运行 ${snapshot.remoteActive ?? 0} / 排队 ${snapshot.remotePending ?? 0}`;
 }
 
 function receiverDetail(snapshot: StatusSnapshot): string {

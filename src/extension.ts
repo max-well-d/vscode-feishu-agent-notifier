@@ -7,6 +7,7 @@ import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
 import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
+import { FeishuInboundClient } from "./feishuInbound";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
 import { HookEventNormalizer } from "./hookEventNormalizer";
 import {
@@ -16,6 +17,11 @@ import {
 } from "./localNotification";
 import { LocalHookServer } from "./server";
 import { buildStatusPresentation, StatusSnapshot } from "./statusUi";
+import { AgentReplyJob, AgentReplyQueue, AgentReplyRunner } from "./agentReply";
+import { ReplyRouter } from "./replyRouter";
+import { discoverLocalSessions } from "./sessionCatalog";
+import { SessionRegistry } from "./sessionRegistry";
+import { ProjectDestinations, resolveProjectDestination } from "./projectRouting";
 import {
   eventIsPaused,
   readPausedWorkspaceRoots,
@@ -29,7 +35,8 @@ import {
   DeliveryTiming,
   MessageFormat,
   NotifierConfig,
-  ReceiveIdType
+  ReceiveIdType,
+  RemoteExecutionPolicy
 } from "./types";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
@@ -40,6 +47,12 @@ const SECRET_HOOK_TOKEN = "feishuAgentNotifier.hookToken";
 const WORKSPACE_PAUSED_KEY = "feishuAgentNotifier.workspacePaused";
 
 let hookServer: LocalHookServer | undefined;
+let feishuInboundClient: FeishuInboundClient | undefined;
+let feishuInboundState: "idle" | "connecting" | "connected" | "reconnecting" | "failed" = "idle";
+let feishuInboundError: string | undefined;
+let sessionRegistry: SessionRegistry | undefined;
+let agentReplyQueue: AgentReplyQueue | undefined;
+let replyRouter: ReplyRouter | undefined;
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
 let claudeRealtimeSource: "message-display" | "transcript" | "probing" | undefined;
@@ -82,6 +95,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   renderStatusBar();
   statusBar.show();
   context.subscriptions.push(output, statusBar);
+  sessionRegistry = new SessionRegistry(path.join(context.globalStorageUri.fsPath, "remote-sessions.json"));
+  agentReplyQueue = createAgentReplyQueue(context);
+  replyRouter = createReplyRouter(context);
   await migrateLegacySecrets(context);
   await migrateWorkspacePause(context);
   agentCapabilities = await detectAgentCapabilities();
@@ -100,6 +116,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.runDiagnostics", () => runDiagnostics(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.retryPending", () => retryPendingEvents(context, true)),
     vscode.commands.registerCommand("feishuAgentNotifier.clearPending", () => clearPendingEvents(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.showRemoteSessions", () => showRemoteSessions(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.cancelRemoteReplies", () => cancelRemoteReplies()),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (!event.affectsConfiguration("feishuAgentNotifier")) {
         return;
@@ -115,6 +133,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export async function deactivate(): Promise<void> {
   stopReceiverTakeoverMonitor();
+  agentReplyQueue?.dispose();
+  agentReplyQueue = undefined;
+  replyRouter = undefined;
+  sessionRegistry = undefined;
+  await feishuInboundClient?.disconnect();
+  feishuInboundClient = undefined;
   codexTranscriptWatcher?.stop();
   codexTranscriptWatcher = undefined;
   claudeTranscriptWatcher?.stop();
@@ -126,6 +150,10 @@ export async function deactivate(): Promise<void> {
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   stopReceiverTakeoverMonitor();
+  await feishuInboundClient?.disconnect();
+  feishuInboundClient = undefined;
+  feishuInboundState = "idle";
+  feishuInboundError = undefined;
   receiverStandbyPort = undefined;
   receiverConflictPort = undefined;
   statusSnapshot = { ...statusSnapshot, initializing: true };
@@ -210,6 +238,9 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
         output?.warn(`${reason}，暂用 transcript 兼容监听。`);
       }
     }
+    if (!integrationTest) {
+      await startFeishuInbound(context);
+    }
   } catch (error) {
     await hookServer?.stop();
     hookServer = undefined;
@@ -222,6 +253,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
         receiverConflictPort = port;
         output?.warn(`端口 ${port} 被不兼容的进程或其他 VS Code Profile 占用。`);
       }
+      feishuInboundState = "idle";
       startReceiverTakeoverMonitor(context, port, token);
       await refreshStatusBar(context);
       return;
@@ -297,6 +329,205 @@ function stopReceiverTakeoverMonitor(): void {
   }
 }
 
+function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueue {
+  const timeoutMinutes = getSetting<number>("remoteReplyTimeoutMinutes", 30);
+  return new AgentReplyQueue(
+    new AgentReplyRunner(Math.max(1, timeoutMinutes) * 60_000),
+    1,
+    {
+      waitUntilReady: (job, signal) => waitUntilAgentSessionIdle(job, signal),
+      onStarted: async (job) => {
+        await replyToInbound(job.inboundMessageId, job.chatId,
+          `开始执行：${job.session.source === "codex" ? "Codex" : "Claude Code"}/${job.session.project}`);
+        void refreshStatusBar(context);
+      },
+      onFinished: async (job, result) => {
+        if (result instanceof Error) {
+          output?.error(`飞书远程回复失败 ${job.session.source}/${job.session.sessionId}：${result.message}`);
+          await replyToInbound(job.inboundMessageId, job.chatId, `执行失败：${result.message}`);
+        } else {
+          output?.info(`飞书远程回复完成 ${job.session.source}/${job.session.sessionId}，耗时 ${result.durationMs}ms。`);
+          await replyToInbound(job.inboundMessageId, job.chatId,
+            `执行完成：${job.session.source === "codex" ? "Codex" : "Claude Code"}/${job.session.project}\nAgent 输出将通过正常通知通道发送。`);
+        }
+        void refreshStatusBar(context);
+      }
+    }
+  );
+}
+
+function createReplyRouter(context: vscode.ExtensionContext): ReplyRouter {
+  if (!sessionRegistry || !agentReplyQueue) {
+    throw new Error("远程回复组件尚未初始化");
+  }
+  return new ReplyRouter({
+    registry: sessionRegistry,
+    queue: agentReplyQueue,
+    policy: () => getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled"),
+    refreshSessions: refreshLocalSessionCatalog,
+    reply: async (message, text) => replyToInbound(message.messageId, message.chatId, text),
+    status: () => remoteStatusText(context),
+    defaultWorkspace: () => vscode.workspace.workspaceFolders?.[0]
+      ? { cwd: vscode.workspace.workspaceFolders[0].uri.fsPath, project: vscode.workspace.workspaceFolders[0].name }
+      : undefined
+  });
+}
+
+async function startFeishuInbound(context: vscode.ExtensionContext): Promise<void> {
+  const policy = getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
+  if (policy === "disabled") {
+    feishuInboundState = "idle";
+    return;
+  }
+  const config = await loadNotifierConfig(context);
+  if (config.deliveryMode !== "app") {
+    feishuInboundState = "failed";
+    feishuInboundError = "远程回复仅支持飞书自建应用机器人模式";
+    output?.warn(feishuInboundError);
+    return;
+  }
+  const allowedUserOpenIds = normalizedStringArray(getSetting<string[]>("remoteAllowedUserOpenIds", []));
+  if (allowedUserOpenIds.length === 0) {
+    feishuInboundState = "failed";
+    feishuInboundError = "未配置允许远程回复的飞书用户 open_id";
+    output?.warn(feishuInboundError);
+    return;
+  }
+  if (!config.appId || !config.appSecret) {
+    feishuInboundState = "failed";
+    feishuInboundError = "飞书 App ID 或 App Secret 未配置";
+    return;
+  }
+  const client = new FeishuInboundClient({
+    appId: config.appId,
+    appSecret: config.appSecret,
+    allowedUserOpenIds,
+    allowedChatIds: normalizedStringArray(getSetting<string[]>("remoteAllowedChatIds", [])),
+    requireGroupMention: getSetting<boolean>("remoteRequireGroupMention", true)
+  }, {
+    onMessage: async (message) => {
+      try {
+        await replyRouter?.handle(message);
+      } catch (error) {
+        output?.error(`处理飞书远程回复失败：${(error as Error).message}`);
+        await replyToInbound(message.messageId, message.chatId, `处理失败：${(error as Error).message}`);
+      }
+    },
+    onState: async (state, detail) => {
+      feishuInboundState = state;
+      feishuInboundError = state === "failed" ? detail : undefined;
+      output?.info(`飞书远程回复连接：${state}${detail ? `（${detail}）` : ""}`);
+      await refreshStatusBar(context);
+    },
+    log: {
+      debug: (message) => output?.debug(message),
+      info: (message) => output?.info(message),
+      warn: (message) => output?.warn(message),
+      error: (message) => output?.error(message)
+    }
+  });
+  feishuInboundClient = client;
+  try {
+    await client.connect();
+    await refreshLocalSessionCatalog();
+  } catch (error) {
+    feishuInboundState = "failed";
+    feishuInboundError = (error as Error).message;
+    output?.error(`无法连接飞书远程回复：${feishuInboundError}`);
+  }
+}
+
+async function waitUntilAgentSessionIdle(job: AgentReplyJob, signal: AbortSignal): Promise<void> {
+  const maximumWait = Math.max(1, getSetting<number>("remoteActiveWaitMinutes", 120)) * 60_000;
+  const startedAt = Date.now();
+  while (!signal.aborted) {
+    // A session discovered from disk may have been marked active before this
+    // window observed its final Hook event. Refresh the lightweight catalog so
+    // a settled transcript can release the queued reply.
+    await refreshLocalSessionCatalog().catch((error) => {
+      output?.warn(`等待 Agent 会话时刷新目录失败：${(error as Error).message}`);
+    });
+    const latest = await sessionRegistry?.getSession(`${job.session.source}:${job.session.sessionId}`);
+    if (!latest || latest.status !== "progress") {
+      return;
+    }
+    if (Date.now() - startedAt >= maximumWait) {
+      throw new Error("等待当前 Agent 任务结束超时");
+    }
+    await abortableDelay(5_000, signal);
+  }
+  throw new Error("远程 Agent 回复已取消");
+}
+
+async function refreshLocalSessionCatalog(): Promise<void> {
+  if (!sessionRegistry) {
+    return;
+  }
+  const sessions = await discoverLocalSessions({ maximumFiles: 300 });
+  const changed = await sessionRegistry.recordDiscoveredSessions(sessions);
+  output?.debug(`本地会话目录已刷新：发现 ${sessions.length}，更新 ${changed}。`);
+}
+
+async function replyToInbound(messageId: string, chatId: string, text: string): Promise<void> {
+  if (!feishuInboundClient || feishuInboundState !== "connected") {
+    output?.warn(`飞书入站未连接，无法回复消息 ${messageId.slice(0, 8)}。`);
+    return;
+  }
+  try {
+    await feishuInboundClient.reply(messageId, chatId, Array.from(text).slice(0, 3000).join(""));
+  } catch (error) {
+    output?.error(`发送飞书入站确认失败：${(error as Error).message}`);
+  }
+}
+
+function remoteStatusText(context: vscode.ExtensionContext): string {
+  const policy = getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
+  return [
+    `Feishu Agent Notifier ${context.extension.packageJSON.version as string}`,
+    `远程策略：${policy === "disabled" ? "禁用" : policy === "planOnly" ? "只读规划" : "继承本机权限"}`,
+    `长连接：${feishuInboundState}${feishuInboundError ? `（${feishuInboundError}）` : ""}`,
+    `运行中：${agentReplyQueue?.activeCount ?? 0}`,
+    `排队：${agentReplyQueue?.pendingCount ?? 0}`
+  ].join("\n");
+}
+
+async function showRemoteSessions(context: vscode.ExtensionContext): Promise<void> {
+  await refreshLocalSessionCatalog();
+  const sessions = await sessionRegistry?.listSessions(50) ?? [];
+  const content = [
+    "# Feishu Agent Notifier 本地会话",
+    "",
+    `生成时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+    `远程状态：${remoteStatusText(context).replace(/\n/g, "；")}`,
+    "",
+    ...sessions.map((session, index) =>
+      `${index + 1}. **${session.alias || session.project || session.sessionId}** — ${session.source} — ${session.sessionId} — ${session.cwd || "无工作目录"}`),
+    ""
+  ].join("\n");
+  const document = await vscode.workspace.openTextDocument({ content, language: "markdown" });
+  await vscode.window.showTextDocument(document, { preview: true });
+}
+
+async function cancelRemoteReplies(): Promise<void> {
+  const count = agentReplyQueue?.cancelAll() ?? 0;
+  await vscode.window.showInformationMessage(count > 0 ? `已取消 ${count} 个远程回复任务。` : "当前没有远程回复任务。 ");
+}
+
+function normalizedStringArray(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref();
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("远程 Agent 回复已取消"));
+    }, { once: true });
+  });
+}
+
 function logAgentCapabilities(): void {
   const codex = agentCapabilities.codexVersion
     ? `${agentCapabilities.codexVersion}，Stop Hook ${agentCapabilities.codexStopHook === true ? "可用" : agentCapabilities.codexStopHook === false ? "未启用" : "未知"}`
@@ -322,6 +553,7 @@ async function enqueueEventAsync(
   event: AgentEvent,
   queueOnFailure: boolean
 ): Promise<void> {
+  await sessionRegistry?.recordEvent(event);
   if (eventIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), event.cwd)) {
     output?.info(`当前工作区已暂停，跳过 ${event.source}/${event.project} 通知。`);
     return;
@@ -353,12 +585,18 @@ async function enqueueEventAsync(
       activeDeliveries += 1;
       renderStatusBar();
       try {
-        const config = await loadNotifierConfig(context);
-        const count = await sender.sendEvent(event, config);
-        if (count > 0) {
+        const baseConfig = await loadNotifierConfig(context);
+        const config = resolveProjectDestination(
+          baseConfig,
+          event,
+          getSetting<ProjectDestinations>("projectDestinations", {})
+        );
+        const result = await sender.sendEvent(event, config);
+        if (result.count > 0) {
+          await sessionRegistry?.recordDelivery(event, result.receipts);
           lastDeliverySuccess = new Date().toISOString();
           lastDeliveryError = undefined;
-          output?.info(`已发送 ${event.source}/${event.project}，共 ${count} 条飞书消息。`);
+          output?.info(`已发送 ${event.source}/${event.project}，共 ${result.count} 条飞书消息。`);
         }
       } finally {
         activeDeliveries = Math.max(0, activeDeliveries - 1);
@@ -488,7 +726,7 @@ async function sendTestNotification(context: vscode.ExtensionContext): Promise<v
     const config = await loadNotifierConfig(context);
     validateConfig(config);
     const sender = new FeishuSender();
-    const count = await sender.sendEvent({
+    const result = await sender.sendEvent({
       source: "codex",
       eventName: "test",
       status: "completed",
@@ -502,7 +740,7 @@ async function sendTestNotification(context: vscode.ExtensionContext): Promise<v
     lastDeliverySuccess = new Date().toISOString();
     lastDeliveryError = undefined;
     await refreshStatusBar(context);
-    await vscode.window.showInformationMessage(`测试成功，已发送 ${count} 条飞书消息。`);
+    await vscode.window.showInformationMessage(`测试成功，已发送 ${result.count} 条飞书消息。`);
   } catch (error) {
     lastDeliveryError = `测试飞书通知失败：${(error as Error).message}`;
     await refreshStatusBar(context);
@@ -566,6 +804,7 @@ async function storeSecrets(context: vscode.ExtensionContext): Promise<void> {
     await context.secrets.store(SECRET_APP_SECRET, appSecret);
     await clearLegacySecretSettings(["appId", "appSecret"]);
   }
+  await restartServer(context);
   await refreshStatusBar(context);
   await vscode.window.showInformationMessage("飞书凭据已保存到 VS Code SecretStorage。请继续填写目标设置并发送测试消息。 ");
 }
@@ -575,6 +814,7 @@ async function clearSecrets(context: vscode.ExtensionContext): Promise<void> {
     await context.secrets.delete(key);
   }
   await clearLegacySecretSettings(["webhookUrl", "webhookSecret", "appId", "appSecret"]);
+  await restartServer(context);
   await refreshStatusBar(context);
   await vscode.window.showInformationMessage("Feishu Agent Notifier 安全凭据已清除。 ");
 }
@@ -744,7 +984,12 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
     claudeMessageDisplaySupported: agentCapabilities.claudeMessageDisplay,
     claudeSource: claudeRealtimeSource,
     lastDeliverySuccess,
-    lastDeliveryError
+    lastDeliveryError,
+    remoteExecutionPolicy: getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled"),
+    inboundState: feishuInboundState,
+    inboundError: feishuInboundError,
+    remoteActive: agentReplyQueue?.activeCount ?? 0,
+    remotePending: agentReplyQueue?.pendingCount ?? 0
   };
   renderStatusBar();
 }
@@ -758,7 +1003,12 @@ function renderStatusBar(): void {
     activeDeliveries,
     claudeSource: claudeRealtimeSource,
     lastDeliverySuccess,
-    lastDeliveryError
+    lastDeliveryError,
+    remoteExecutionPolicy: getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled"),
+    inboundState: feishuInboundState,
+    inboundError: feishuInboundError,
+    remoteActive: agentReplyQueue?.activeCount ?? 0,
+    remotePending: agentReplyQueue?.pendingCount ?? 0
   });
   statusBar.text = presentation.text;
   statusBar.backgroundColor = presentation.severity === "error"
@@ -780,7 +1030,7 @@ function renderStatusBar(): void {
 }
 
 interface StatusActionItem extends vscode.QuickPickItem {
-  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "settings" | "logs";
+  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "sessions" | "cancelRemote" | "settings" | "logs";
 }
 
 async function showStatus(context: vscode.ExtensionContext): Promise<void> {
@@ -798,6 +1048,10 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
     { label: "$(send) 发送飞书测试消息", action: "test" },
     ...(statusSnapshot.pendingCount > 0
       ? [{ label: `$(sync) 重试 ${statusSnapshot.pendingCount} 条待处理通知`, action: "retry" as const }]
+      : []),
+    { label: "$(list-tree) 查看本地 Agent 会话", action: "sessions" },
+    ...((agentReplyQueue?.activeCount ?? 0) + (agentReplyQueue?.pendingCount ?? 0) > 0
+      ? [{ label: "$(stop-circle) 取消远程回复任务", action: "cancelRemote" as const }]
       : []),
     { label: "", kind: vscode.QuickPickItemKind.Separator },
     { label: "$(tools) 安装/修复 Agent 通知接入", action: "repair" },
@@ -828,6 +1082,12 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       break;
     case "diagnostics":
       await runDiagnostics(context);
+      break;
+    case "sessions":
+      await showRemoteSessions(context);
+      break;
+    case "cancelRemote":
+      await cancelRemoteReplies();
       break;
     case "settings":
       await openSettings();
@@ -948,6 +1208,19 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
     checks.push(checkLine("飞书配置", true, getSetting<DeliveryMode>("deliveryMode", "webhook")));
   } catch (error) {
     checks.push(checkLine("飞书配置", false, (error as Error).message));
+  }
+
+  const remotePolicy = getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
+  checks.push(checkLine("飞书远程回复策略", true,
+    remotePolicy === "disabled" ? "已禁用" : remotePolicy === "planOnly" ? "只读规划" : "继承本机权限"));
+  if (remotePolicy !== "disabled") {
+    checks.push(checkLine("飞书入站长连接", feishuInboundState === "connected",
+      `${feishuInboundState}${feishuInboundError ? `，${feishuInboundError}` : ""}`));
+    checks.push(checkLine("远程用户白名单",
+      normalizedStringArray(getSetting<string[]>("remoteAllowedUserOpenIds", [])).length > 0,
+      `${normalizedStringArray(getSetting<string[]>("remoteAllowedUserOpenIds", [])).length} 个 open_id`));
+    checks.push(checkLine("远程回复队列", true,
+      `运行 ${agentReplyQueue?.activeCount ?? 0}，排队 ${agentReplyQueue?.pendingCount ?? 0}`));
   }
 
   try {

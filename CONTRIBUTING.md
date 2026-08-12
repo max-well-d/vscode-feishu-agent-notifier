@@ -10,4 +10,4 @@ npm run check-package
 npm run package
 ```
 
-Changes that touch hook installation must preserve unrelated Codex and Claude Code configuration and include idempotency/removal tests. Network changes must test transient retry and permanent failure behavior. Never add real Feishu credentials or captured Agent transcripts to fixtures.
+Changes that touch hook installation must preserve unrelated Codex and Claude Code configuration and include idempotency/removal tests. Network changes must test transient retry and permanent failure behavior. Remote-reply changes must preserve deny-by-default allowlists, stdin-only prompt transport, session serialization, bounded queues, and the absence of bypass flags. Never add real Feishu credentials or captured Agent transcripts to fixtures.

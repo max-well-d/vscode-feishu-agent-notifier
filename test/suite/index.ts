@@ -14,7 +14,9 @@ export async function run(): Promise<void> {
     "feishuAgentNotifier.toggleWorkspacePause",
     "feishuAgentNotifier.runDiagnostics",
     "feishuAgentNotifier.retryPending",
-    "feishuAgentNotifier.clearPending"
+    "feishuAgentNotifier.clearPending",
+    "feishuAgentNotifier.showRemoteSessions",
+    "feishuAgentNotifier.cancelRemoteReplies"
   ]) {
     assert.ok(commands.includes(command), `missing registered command: ${command}`);
   }
@@ -25,6 +27,9 @@ export async function run(): Promise<void> {
   assert.equal(config.get("queueWhenOffline"), true);
   assert.equal(config.get("deliveryMaxAttempts"), 3);
   assert.equal(config.get("deliveryErrorNotificationCooldownMinutes"), 5);
+  assert.equal(config.get("remoteExecutionPolicy"), "disabled");
+  assert.deepEqual(config.get("remoteAllowedUserOpenIds"), []);
+  assert.equal(config.get("remoteRequireGroupMention"), true);
   assert.equal(config.has("appSecret"), false);
   assert.equal(config.has("webhookUrl"), false);
 

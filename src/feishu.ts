@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { AgentEvent, NotifierConfig } from "./types";
+import { AgentEvent, FeishuDeliveryReceipt, FeishuDeliveryResult, NotifierConfig } from "./types";
 import { addChunkLabels, formatEventMessage, splitMessage } from "./event";
 import { buildFeishuCard, FeishuCard } from "./card";
 
@@ -16,6 +16,10 @@ interface FeishuResponse {
   StatusMessage?: string;
   tenant_access_token?: string;
   expire?: number;
+  data?: {
+    message_id?: string;
+    chat_id?: string;
+  };
 }
 
 export type FetchLike = typeof fetch;
@@ -25,9 +29,9 @@ export class FeishuSender {
 
   public constructor(private readonly fetchImpl: FetchLike = fetch) {}
 
-  public async sendEvent(event: AgentEvent, config: NotifierConfig): Promise<number> {
+  public async sendEvent(event: AgentEvent, config: NotifierConfig): Promise<FeishuDeliveryResult> {
     if (event.status === "failed" && !config.notifyOnFailure) {
-      return 0;
+      return { count: 0, receipts: [] };
     }
 
     validateConfig(config);
@@ -38,6 +42,7 @@ export class FeishuSender {
     const plainChunks = splitMessage(message, config.maxChunkCharacters);
     const chunks = textMode ? addChunkLabels(plainChunks) : plainChunks;
 
+    const receipts: FeishuDeliveryReceipt[] = [];
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       const card = textMode
@@ -49,13 +54,16 @@ export class FeishuSender {
       if (config.deliveryMode === "webhook") {
         await this.sendWebhook(chunk, card, config);
       } else {
-        await this.sendApp(chunk, card, config);
+        const receipt = await this.sendApp(chunk, card, config);
+        if (receipt) {
+          receipts.push({ ...receipt, chunkIndex: index + 1 });
+        }
       }
       if (chunks.length > 1) {
         await delay(250);
       }
     }
-    return chunks.length;
+    return { count: chunks.length, receipts };
   }
 
   private async sendWebhook(
@@ -81,7 +89,11 @@ export class FeishuSender {
     await ensureFeishuSuccess(response);
   }
 
-  private async sendApp(text: string, card: FeishuCard | undefined, config: NotifierConfig): Promise<void> {
+  private async sendApp(
+    text: string,
+    card: FeishuCard | undefined,
+    config: NotifierConfig
+  ): Promise<Omit<FeishuDeliveryReceipt, "chunkIndex"> | undefined> {
     const token = await this.getTenantAccessToken(config);
     const endpoint = new URL("https://open.feishu.cn/open-apis/im/v1/messages");
     endpoint.searchParams.set("receive_id_type", config.receiveIdType);
@@ -98,7 +110,10 @@ export class FeishuSender {
         content: JSON.stringify(card ?? { text })
       })
     }, config);
-    await ensureFeishuSuccess(response);
+    const result = await ensureFeishuSuccess(response);
+    return result.data?.message_id
+      ? { messageId: result.data.message_id, chatId: result.data.chat_id }
+      : undefined;
   }
 
   private async getTenantAccessToken(config: NotifierConfig): Promise<string> {
@@ -192,13 +207,14 @@ export function validateConfig(config: NotifierConfig): void {
   }
 }
 
-async function ensureFeishuSuccess(response: Response): Promise<void> {
+async function ensureFeishuSuccess(response: Response): Promise<FeishuResponse> {
   const result = await parseFeishuResponse(response);
   const webhookOk = result.StatusCode === undefined || result.StatusCode === 0;
   const apiOk = result.code === undefined || result.code === 0;
   if (!response.ok || !webhookOk || !apiOk) {
     throw new Error(feishuError("飞书发送失败", response.status, result));
   }
+  return result;
 }
 
 async function parseFeishuResponse(response: Response): Promise<FeishuResponse> {

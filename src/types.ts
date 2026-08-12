@@ -2,6 +2,7 @@ export type DeliveryMode = "webhook" | "app";
 export type ReceiveIdType = "open_id" | "user_id" | "email" | "chat_id";
 export type MessageFormat = "card" | "text";
 export type DeliveryTiming = "realtime" | "completion";
+export type RemoteExecutionPolicy = "disabled" | "planOnly" | "inherit";
 
 export interface AgentEvent {
   source: "codex" | "claude-code" | "unknown";
@@ -31,6 +32,38 @@ export interface NotifierConfig {
   notifyOnFailure: boolean;
   deliveryMaxAttempts: number;
   retryBaseDelayMs: number;
+}
+
+export interface FeishuDeliveryReceipt {
+  messageId: string;
+  chatId?: string;
+  chunkIndex: number;
+}
+
+export interface FeishuDeliveryResult {
+  count: number;
+  receipts: FeishuDeliveryReceipt[];
+}
+
+export interface AgentSession {
+  source: AgentEvent["source"];
+  sessionId: string;
+  cwd: string;
+  project: string;
+  lastSeenAt: string;
+  status: AgentEvent["status"];
+  alias?: string;
+}
+
+export interface InboundReplyContext {
+  messageId: string;
+  parentMessageId?: string;
+  rootMessageId?: string;
+  chatId: string;
+  chatType: "p2p" | "group";
+  senderOpenId: string;
+  text: string;
+  mentionedBot: boolean;
 }
 
 export interface HookCommand {

@@ -51,3 +51,25 @@ test("shows transient sending and completion-only states", () => {
   assert.match(buildStatusPresentation({ ...ready, hooksOk: false, activeDeliveries: 1 }).text, /发送中/);
   assert.match(buildStatusPresentation({ ...ready, deliveryTiming: "completion" }).text, /仅结束/);
 });
+
+test("shows bidirectional readiness and inbound failures", () => {
+  const connected = buildStatusPresentation({
+    ...ready,
+    deliveryMode: "app",
+    remoteExecutionPolicy: "planOnly",
+    inboundState: "connected",
+    remoteActive: 0,
+    remotePending: 1
+  });
+  assert.match(connected.text, /双向/);
+  assert.match(connected.details.join("\n"), /只读规划，已连接，运行 0 \/ 排队 1/);
+  const failed = buildStatusPresentation({
+    ...ready,
+    deliveryMode: "app",
+    remoteExecutionPolicy: "inherit",
+    inboundState: "failed",
+    inboundError: "invalid credentials"
+  });
+  assert.equal(failed.severity, "error");
+  assert.match(failed.text, /入站异常/);
+});

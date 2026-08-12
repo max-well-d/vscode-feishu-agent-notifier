@@ -1,8 +1,8 @@
 {
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
-  "description": "Send every Codex or Claude Code assistant message to Feishu in realtime, with completion and local notification modes.",
-  "version": "0.10.0",
+  "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
+  "version": "0.12.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -37,7 +37,8 @@
     "lark",
     "codex",
     "claude-code",
-    "notification"
+    "notification",
+    "remote-control"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -52,9 +53,11 @@
     "onCommand:feishuAgentNotifier.toggleWorkspacePause",
     "onCommand:feishuAgentNotifier.runDiagnostics",
     "onCommand:feishuAgentNotifier.retryPending",
-    "onCommand:feishuAgentNotifier.clearPending"
+    "onCommand:feishuAgentNotifier.clearPending",
+    "onCommand:feishuAgentNotifier.showRemoteSessions",
+    "onCommand:feishuAgentNotifier.cancelRemoteReplies"
   ],
-  "main": "./out/src/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
@@ -104,6 +107,14 @@
       {
         "command": "feishuAgentNotifier.clearPending",
         "title": "飞书 Agent 通知：清除待处理通知"
+      },
+      {
+        "command": "feishuAgentNotifier.showRemoteSessions",
+        "title": "飞书 Agent 通知：查看可远程回复的 Agent 会话"
+      },
+      {
+        "command": "feishuAgentNotifier.cancelRemoteReplies",
+        "title": "飞书 Agent 通知：取消远程回复任务"
       }
     ],
     "walkthroughs": [
@@ -208,13 +219,81 @@
           "order": 23,
           "description": "应用机器人的目标用户、邮箱或群聊 ID。"
         },
+        "feishuAgentNotifier.remoteExecutionPolicy": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "planOnly",
+            "inherit"
+          ],
+          "enumDescriptions": [
+            "关闭飞书入站消息和远程 Agent 回复。",
+            "允许回复，但 Codex 使用只读沙箱、Claude Code 使用 plan 权限模式。",
+            "允许回复并继承本机 Agent 配置。远程指令可能修改文件或执行命令。"
+          ],
+          "default": "disabled",
+          "scope": "machine",
+          "order": 24,
+          "description": "飞书远程回复的执行权限。仅自建应用机器人模式支持。"
+        },
+        "feishuAgentNotifier.remoteAllowedUserOpenIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^ou_" },
+          "uniqueItems": true,
+          "default": [],
+          "scope": "machine",
+          "order": 25,
+          "description": "允许提交远程回复的飞书用户 open_id 白名单。为空时拒绝所有入站消息。"
+        },
+        "feishuAgentNotifier.remoteAllowedChatIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^oc_" },
+          "uniqueItems": true,
+          "default": [],
+          "scope": "machine",
+          "order": 26,
+          "description": "允许远程回复的群聊 chat_id 白名单。单聊不需要填写。"
+        },
+        "feishuAgentNotifier.remoteRequireGroupMention": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 27,
+          "description": "群聊远程回复必须 @机器人；建议保持开启。"
+        },
+        "feishuAgentNotifier.remoteReplyTimeoutMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 240,
+          "default": 30,
+          "scope": "machine",
+          "order": 28,
+          "description": "单条飞书远程 Agent 回复的最长运行分钟数。"
+        },
+        "feishuAgentNotifier.remoteActiveWaitMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440,
+          "default": 120,
+          "scope": "machine",
+          "order": 29,
+          "description": "目标会话正在运行时，远程回复等待其结束的最长分钟数。"
+        },
+        "feishuAgentNotifier.projectDestinations": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "string" },
+          "scope": "machine",
+          "order": 30,
+          "description": "可选的项目路由：键为项目名或绝对路径，值为飞书 chat_id；仅应用机器人模式生效。"
+        },
         "feishuAgentNotifier.port": {
           "type": "integer",
           "default": 37561,
           "minimum": 1024,
           "maximum": 65535,
           "scope": "machine",
-          "order": 30,
+          "order": 40,
           "description": "VS Code 本地通知接收器端口，仅监听 127.0.0.1。修改后需要重新安装通知接入。"
         },
         "feishuAgentNotifier.messageFormat": {
@@ -334,18 +413,23 @@
   },
   "scripts": {
     "compile": "tsc -p .",
-    "vscode:prepublish": "npm run compile",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node22 --external:vscode --external:./larkSdk --outfile=dist/extension.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/larkSdk.js",
+    "vscode:prepublish": "npm run compile && npm run bundle",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test out/test/*.test.js",
-    "test:integration": "npm run compile && node out/test/runIntegrationTests.js",
-    "check-package": "vsce ls --no-dependencies",
-    "package": "npm run compile && vsce package --no-dependencies"
+    "test:integration": "npm run compile && npm run bundle && node out/test/runIntegrationTests.js",
+    "check-package": "npm run bundle && vsce ls --no-dependencies",
+    "package": "npm run compile && npm run bundle && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.73.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.106.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.0",
     "typescript": "^5.9.0"
   }
 }

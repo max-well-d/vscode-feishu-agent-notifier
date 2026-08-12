@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0
+
+- Add opt-in bidirectional Feishu application-bot support over the official WebSocket long connection, without requiring a public callback server.
+- Persist Feishu `message_id` to Codex/Claude Code session mappings so quoted replies resume the exact local conversation instead of guessing the latest session.
+- Discover recent local Codex and Claude Code history and add `/sessions`, `/use`, `/send`, `/new`, `/alias`, `/status`, `/cancel`, and `/help` commands.
+- Resume Codex through `codex exec resume` and Claude Code through `claude --resume --print`, passing remote text over stdin rather than process arguments.
+- Add per-session serialization, active-session waiting, bounded queue size, cancellation, execution timeout, and status replies.
+- Keep remote execution disabled by default; add read-only planning and explicit inherited-permission policies with user/chat allowlists and required group mentions.
+- Reuse multi-window receiver ownership so only the active VS Code window owns the Feishu long connection and automatically reconnects after takeover.
+- Add per-project application-bot destinations, persistent aliases/chat selections, message-map expiry, inbound idempotency, and local session diagnostics.
+- Bundle the official Feishu Node SDK into the extension while excluding source maps, development files, and transitive `node_modules` from the VSIX.
+- Extend automated coverage to 71 unit/process tests plus Extension Host activation and package-content verification.
+
 ## 0.10.0
 
 - Add the official Codex `Stop` Hook with `last_assistant_message`, while retaining `notify` as a backward-compatible and untrusted-hook fallback.

@@ -53,8 +53,9 @@ test("sends a webhook card with rendered Markdown", async () => {
   }) as typeof fetch;
 
   const sender = new FeishuSender(fakeFetch);
-  const count = await sender.sendEvent(event, webhookConfig);
-  assert.equal(count, 1);
+  const result = await sender.sendEvent(event, webhookConfig);
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.receipts, []);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].body.msg_type, "interactive");
   assert.equal(requests[0].body.card.schema, "2.0");
@@ -78,7 +79,11 @@ test("app mode fetches a token and sends to the configured target", async () => 
         expire: 3600
       }), { status: 200 });
     }
-    return new Response(JSON.stringify({ code: 0, msg: "success" }), { status: 200 });
+    return new Response(JSON.stringify({
+      code: 0,
+      msg: "success",
+      data: { message_id: "om_reply_target", chat_id: "oc_target" }
+    }), { status: 200 });
   }) as typeof fetch;
 
   const config: NotifierConfig = {
@@ -90,13 +95,14 @@ test("app mode fetches a token and sends to the configured target", async () => 
     receiveId: "developer@example.com"
   };
   const sender = new FeishuSender(fakeFetch);
-  await sender.sendEvent(event, config);
+  const result = await sender.sendEvent(event, config);
 
   assert.equal(urls.length, 2);
   assert.match(urls[1], /receive_id_type=email/);
   assert.equal(bodies[1].receive_id, "developer@example.com");
   assert.equal(bodies[1].msg_type, "interactive");
   assert.equal(JSON.parse(bodies[1].content).schema, "2.0");
+  assert.deepEqual(result.receipts, [{ messageId: "om_reply_target", chatId: "oc_target", chunkIndex: 1 }]);
 });
 
 test("keeps a plain text compatibility mode", async () => {
