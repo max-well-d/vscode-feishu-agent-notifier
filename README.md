@@ -12,6 +12,8 @@
 - 支持 Claude Code `MessageDisplay`、`Stop` 和 `StopFailure` Hooks；transcript 只在等待首个 `MessageDisplay` 或未安装该 Hook 时作为兼容监听。
 - Codex CLI 与 Claude Code CLI 均支持；通知内容是最终 assistant 回复，不包含终端中全部工具 stdout/stderr。
 - 支持 VS Code 本地完成/失败提醒，可选择始终显示、仅窗口失焦时显示或关闭。
+- 在左下角实时显示通知状态，包括实时、发送中、待处理、暂停、需配置、需修复和异常；悬停可查看完整健康信息。
+- 点击状态栏可直接测试、暂停当前工作区、重试队列、修复 Hook、运行自检、打开设置或日志。
 - 本地提醒包含可配置的回复预览，并可一键打开完整 Markdown 回复。
 - Codex 从命令行参数接收 `agent-turn-complete` JSON；Claude Code 从 stdin 接收 Hook JSON。
 - 最终回复不截断；超过单条上限时按 Unicode 字符自动分片。
@@ -35,7 +37,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.8.0.vsix
+code --install-extension .\feishu-agent-notifier-0.9.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -53,6 +55,14 @@ code --install-extension .\feishu-agent-notifier-0.8.0.vsix
 7. 运行 `飞书 Agent 通知：运行自检与修复`。
 
 本地提醒默认开启。可运行 `飞书 Agent 通知：发送本地测试提醒` 单独测试；通过 `localNotificationMode` 选择 `always`、`whenUnfocused` 或 `off`。实时过程消息默认只发飞书，不逐条弹出 VS Code 提醒；如需要可开启 `localNotificationRealtime`。
+
+### 状态中心
+
+扩展在 VS Code 左下角显示当前通知状态。飞书 Webhook/API 是按次请求，因此“实时”表示本地接收器、配置和 Agent 接入已经就绪，不代表维持了永久网络连接。
+
+将鼠标悬停在状态栏上，可查看投递模式、本地端口、Codex notify、Claude Code 消息来源、待处理数量以及最近一次成功或错误。点击状态栏会打开轻量操作菜单。
+
+“暂停当前工作区通知”只过滤工作目录属于当前工作区的 Agent 事件，不会关闭全局接收器，也不会影响其他项目。暂停期间匹配的实时事件会跳过；已经进入离线队列的消息会保留到恢复后再投递。
 
 非敏感选项可直接在 VS Code 设置界面填写。Webhook、签名密钥、App ID 和 App Secret 只通过“安全保存飞书凭据”命令写入 SecretStorage；从旧版本升级时，遗留的明文凭据会自动迁移并清除。
 

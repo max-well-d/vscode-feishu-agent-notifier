@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isCrossOriginDuplicate,
+  eventBelongsToWorkspace,
   normalizeAgentEvent,
   projectNameFromCwd,
   splitMessage
@@ -50,6 +51,15 @@ test("extracts project names across Windows and POSIX path formats", () => {
   assert.equal(projectNameFromCwd("C:\\work\\project-a\\"), "project-a");
   assert.equal(projectNameFromCwd("/work/project-b/"), "project-b");
   assert.equal(projectNameFromCwd(""), "unknown-project");
+});
+
+test("matches event working directories to workspace roots safely", () => {
+  assert.equal(eventBelongsToWorkspace("C:\\work\\project-a\\src", ["C:\\work\\project-a"]), true);
+  assert.equal(eventBelongsToWorkspace("c:\\WORK\\project-a", ["C:\\work\\project-a"]), true);
+  assert.equal(eventBelongsToWorkspace("C:\\work\\project-ab", ["C:\\work\\project-a"]), false);
+  assert.equal(eventBelongsToWorkspace("/work/project-a/src", ["/work/project-a"]), true);
+  assert.equal(eventBelongsToWorkspace("/work/project-b", ["/work/project-a"]), false);
+  assert.equal(eventBelongsToWorkspace("", ["/work/project-a"]), false);
 });
 
 test("deduplicates matching bodies only across different capture origins", () => {

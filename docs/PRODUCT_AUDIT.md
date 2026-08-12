@@ -4,18 +4,18 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 
 ## Current readiness
 
-| Area | 0.8.0 status | Mature open-source expectation |
+| Area | 0.9.0 status | Mature open-source expectation |
 | --- | --- | --- |
 | Core message capture | Good | Claude official MessageDisplay with transcript compatibility fallback; Codex transcript watching plus notify and completion fallbacks |
 | Delivery reliability | Good | Unicode-safe chunking, timeouts, bounded retry/backoff, token caching, deduplication, and an offline queue |
 | Credential security | Good | SecretStorage, automatic migration from legacy plaintext settings, loopback-only authenticated receiver |
 | Onboarding | Good | Walkthrough, secure credential wizard, test commands, hook installer, and self-diagnostics |
-| Diagnostics | Good | Receiver/config/hook/queue checks and a redacted report; logs and actionable repair commands |
+| Diagnostics | Good | Live status center, receiver/config/hook/queue checks, redacted report, logs, and actionable repair commands |
 | Automated quality | Good | Unit/process tests on Windows/Linux, Extension Host activation tests, package-content check, reproducible tag release workflow |
 | Marketplace readiness | Partial | Repository metadata is present, but a verified VS Code Marketplace publisher, icon, screenshots, localization, and store listing are still required |
 | Native background delivery | Partial | Every assistant text is near-realtime while VS Code runs; when it is closed only final Hook events can be queued, so a separate background watcher is required for always-on realtime delivery |
 | Cross-environment support | Partial | Local UI extension behavior is explicit; WSL, SSH, Dev Containers, multiple profiles, and portable hook paths need dedicated end-to-end coverage |
-| Policy controls | Partial | Failure/local notification controls exist; project allow/deny rules, content redaction, quiet hours, and destination routing are not yet implemented |
+| Policy controls | Partial | Failure/local notification controls and workspace pause exist; project allow/deny rules, content redaction, quiet hours, and destination routing are not yet implemented |
 | Observability/history | Partial | Logs and last result exist; a searchable delivery history, per-message attempt details, and exportable support bundle are future work |
 
 ## Release gates

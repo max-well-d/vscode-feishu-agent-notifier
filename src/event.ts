@@ -52,6 +52,13 @@ export function projectNameFromCwd(cwd: string): string {
     : path.posix.basename(withoutTrailingSeparators);
 }
 
+export function eventBelongsToWorkspace(cwd: string, workspaceRoots: string[]): boolean {
+  if (!cwd) {
+    return false;
+  }
+  return workspaceRoots.some((root) => isPathInside(cwd, root));
+}
+
 export function eventDeduplicationKey(event: AgentEvent): string {
   return event.eventId
     ? [event.source, event.sessionId, event.eventId].join(":")
@@ -109,4 +116,15 @@ export function addChunkLabels(chunks: string[]): string[] {
     return chunks;
   }
   return chunks.map((chunk, index) => `【${index + 1}/${chunks.length}】\n${chunk}`);
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  const windows = /^[a-zA-Z]:[\\/]/.test(candidate) || /^[a-zA-Z]:[\\/]/.test(root);
+  const pathApi = windows ? path.win32 : path.posix;
+  const resolvedCandidate = pathApi.resolve(candidate);
+  const resolvedRoot = pathApi.resolve(root);
+  const normalizedCandidate = windows ? resolvedCandidate.toLowerCase() : resolvedCandidate;
+  const normalizedRoot = windows ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const relative = pathApi.relative(normalizedRoot, normalizedCandidate);
+  return relative === "" || (!relative.startsWith("..") && !pathApi.isAbsolute(relative));
 }

@@ -11,6 +11,7 @@ export async function run(): Promise<void> {
   for (const command of [
     "feishuAgentNotifier.installHooks",
     "feishuAgentNotifier.testNotification",
+    "feishuAgentNotifier.toggleWorkspacePause",
     "feishuAgentNotifier.runDiagnostics",
     "feishuAgentNotifier.retryPending",
     "feishuAgentNotifier.clearPending"

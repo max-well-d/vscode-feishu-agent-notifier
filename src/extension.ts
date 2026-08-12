@@ -4,7 +4,7 @@ import path from "node:path";
 import * as vscode from "vscode";
 import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
-import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
+import { eventBelongsToWorkspace, eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
 import { HookEventNormalizer } from "./hookEventNormalizer";
@@ -14,6 +14,7 @@ import {
   shouldShowLocalNotification
 } from "./localNotification";
 import { LocalHookServer } from "./server";
+import { buildStatusPresentation, StatusSnapshot } from "./statusUi";
 import { drainPendingEvents, pendingEventCount, queuePendingEvent } from "./pendingQueue";
 import {
   AgentEvent,
@@ -29,6 +30,7 @@ const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
 const SECRET_APP_ID = "feishuAgentNotifier.appId";
 const SECRET_APP_SECRET = "feishuAgentNotifier.appSecret";
 const SECRET_HOOK_TOKEN = "feishuAgentNotifier.hookToken";
+const WORKSPACE_PAUSED_KEY = "feishuAgentNotifier.workspacePaused";
 
 let hookServer: LocalHookServer | undefined;
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
@@ -43,6 +45,18 @@ let lastDeliveryError: string | undefined;
 let lastDeliveryErrorNotificationAt = 0;
 let extensionStoragePath = "";
 let activeExtensionId = "local.feishu-agent-notifier";
+let activeDeliveries = 0;
+let statusRefreshId = 0;
+let statusSnapshot: StatusSnapshot = {
+  initializing: true,
+  enabled: true,
+  workspacePaused: false,
+  configurationOk: false,
+  deliveryTiming: "realtime",
+  deliveryMode: "webhook",
+  pendingCount: 0,
+  activeDeliveries: 0
+};
 const recentEvents = new Map<string, number>();
 const recentMessageBodies = new Map<string, { timestamp: number; origin: AgentEvent["origin"] }>();
 
@@ -50,37 +64,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   extensionStoragePath = context.globalStorageUri.fsPath;
   activeExtensionId = context.extension.id;
   output = vscode.window.createOutputChannel("Feishu Agent Notifier", { log: true });
-  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
+  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
+  statusBar.name = "Feishu Agent Notifier 状态";
   statusBar.command = "feishuAgentNotifier.showStatus";
+  renderStatusBar();
   statusBar.show();
   context.subscriptions.push(output, statusBar);
   await migrateLegacySecrets(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("feishuAgentNotifier.installHooks", () => installHookFiles(context)),
-    vscode.commands.registerCommand("feishuAgentNotifier.uninstallHooks", removeHookFiles),
+    vscode.commands.registerCommand("feishuAgentNotifier.uninstallHooks", () => removeHookFiles(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.testNotification", () => sendTestNotification(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.testLocalNotification", sendLocalTestNotification),
     vscode.commands.registerCommand("feishuAgentNotifier.storeSecrets", () => storeSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.clearSecrets", () => clearSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.openSettings", openSettings),
-    vscode.commands.registerCommand("feishuAgentNotifier.showStatus", showStatus),
+    vscode.commands.registerCommand("feishuAgentNotifier.showStatus", () => showStatus(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.toggleWorkspacePause", () => toggleWorkspacePause(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.runDiagnostics", () => runDiagnostics(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.retryPending", () => retryPendingEvents(context, true)),
-    vscode.commands.registerCommand("feishuAgentNotifier.clearPending", clearPendingEvents),
+    vscode.commands.registerCommand("feishuAgentNotifier.clearPending", () => clearPendingEvents(context)),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (!event.affectsConfiguration("feishuAgentNotifier")) {
         return;
       }
       await deployHelper(context);
       await restartServer(context);
-      updateStatusBar();
     })
   );
 
   await deployHelper(context);
   await restartServer(context);
-  updateStatusBar();
 }
 
 export async function deactivate(): Promise<void> {
@@ -94,6 +109,8 @@ export async function deactivate(): Promise<void> {
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
+  statusSnapshot = { ...statusSnapshot, initializing: true };
+  renderStatusBar();
   codexTranscriptWatcher?.stop();
   codexTranscriptWatcher = undefined;
   claudeTranscriptWatcher?.stop();
@@ -103,6 +120,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   hookServer = undefined;
   if (!getSetting<boolean>("enabled", true)) {
     output?.info("通知接收器已禁用。 ");
+    await refreshStatusBar(context);
     return;
   }
 
@@ -121,6 +139,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
     claudeTranscriptWatcher = undefined;
     claudeRealtimeSource = "message-display";
     output?.info("已收到 Claude Code MessageDisplay；transcript 兼容监听已关闭。");
+    void refreshStatusBar(context);
   });
   hookServer = new LocalHookServer(token, async (event) => {
     enqueueEvent(context, sender, event);
@@ -175,6 +194,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
       : `无法启动本地 Hook 接收器：${(error as Error).message}`;
     output?.warn(message);
   }
+  await refreshStatusBar(context);
 }
 
 function enqueueEvent(
@@ -183,6 +203,10 @@ function enqueueEvent(
   event: AgentEvent,
   queueOnFailure = true
 ): Promise<void> {
+  if (isWorkspacePaused(context) && eventBelongsToWorkspace(event.cwd, workspaceRoots())) {
+    output?.info(`当前工作区已暂停，跳过 ${event.source}/${event.project} 通知。`);
+    return Promise.resolve();
+  }
   const key = eventDeduplicationKey(event);
   let messageKey: string | undefined;
   const now = Date.now();
@@ -207,12 +231,19 @@ function enqueueEvent(
 
   const delivery = sendQueue
     .then(async () => {
-      const config = await loadNotifierConfig(context);
-      const count = await sender.sendEvent(event, config);
-      if (count > 0) {
-        lastDeliverySuccess = new Date().toISOString();
-        lastDeliveryError = undefined;
-        output?.info(`已发送 ${event.source}/${event.project}，共 ${count} 条飞书消息。`);
+      activeDeliveries += 1;
+      renderStatusBar();
+      try {
+        const config = await loadNotifierConfig(context);
+        const count = await sender.sendEvent(event, config);
+        if (count > 0) {
+          lastDeliverySuccess = new Date().toISOString();
+          lastDeliveryError = undefined;
+          output?.info(`已发送 ${event.source}/${event.project}，共 ${count} 条飞书消息。`);
+        }
+      } finally {
+        activeDeliveries = Math.max(0, activeDeliveries - 1);
+        renderStatusBar();
       }
     });
   sendQueue = delivery.catch(async (error) => {
@@ -244,6 +275,8 @@ function enqueueEvent(
           }
         });
       }
+    }).finally(() => {
+      void refreshStatusBar(context);
     });
   return delivery;
 }
@@ -308,7 +341,7 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
   }
 }
 
-async function removeHookFiles(): Promise<void> {
+async function removeHookFiles(context: vscode.ExtensionContext): Promise<void> {
   const answer = await vscode.window.showWarningMessage(
     "从用户级 Codex 与 Claude Code 配置中移除 Feishu Agent Notifier 通知接入？",
     { modal: true },
@@ -319,6 +352,7 @@ async function removeHookFiles(): Promise<void> {
   }
   try {
     const result = await uninstallHooks();
+    await refreshStatusBar(context);
     await vscode.window.showInformationMessage(
       `Hooks 已移除。Codex：${result.codexChanged ? "已修改" : "未找到"}；Claude Code：${result.claudeChanged ? "已修改" : "未找到"}。`
     );
@@ -343,8 +377,13 @@ async function sendTestNotification(context: vscode.ExtensionContext): Promise<v
       message: "这是一条 Feishu Agent Notifier 测试消息。完整回复分片、Webhook 或应用机器人配置工作正常。",
       occurredAt: new Date().toISOString()
     }, config);
+    lastDeliverySuccess = new Date().toISOString();
+    lastDeliveryError = undefined;
+    await refreshStatusBar(context);
     await vscode.window.showInformationMessage(`测试成功，已发送 ${count} 条飞书消息。`);
   } catch (error) {
+    lastDeliveryError = `测试飞书通知失败：${(error as Error).message}`;
+    await refreshStatusBar(context);
     await showOperationError("测试通知失败", error);
   }
 }
@@ -405,6 +444,7 @@ async function storeSecrets(context: vscode.ExtensionContext): Promise<void> {
     await context.secrets.store(SECRET_APP_SECRET, appSecret);
     await clearLegacySecretSettings(["appId", "appSecret"]);
   }
+  await refreshStatusBar(context);
   await vscode.window.showInformationMessage("飞书凭据已保存到 VS Code SecretStorage。请继续填写目标设置并发送测试消息。 ");
 }
 
@@ -413,6 +453,7 @@ async function clearSecrets(context: vscode.ExtensionContext): Promise<void> {
     await context.secrets.delete(key);
   }
   await clearLegacySecretSettings(["webhookUrl", "webhookSecret", "appId", "appSecret"]);
+  await refreshStatusBar(context);
   await vscode.window.showInformationMessage("Feishu Agent Notifier 安全凭据已清除。 ");
 }
 
@@ -508,44 +549,158 @@ function getSetting<T>(key: string, fallback: T): T {
   return vscode.workspace.getConfiguration("feishuAgentNotifier").get<T>(key, fallback);
 }
 
-function updateStatusBar(): void {
+async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void> {
+  const refreshId = ++statusRefreshId;
+  const enabled = getSetting<boolean>("enabled", true);
+  const deliveryTiming = getSetting<DeliveryTiming>("deliveryTiming", "realtime");
+  const deliveryMode = getSetting<DeliveryMode>("deliveryMode", "webhook");
+  const pendingCount = await pendingEventCount(pendingDirectory());
+  let configurationOk = false;
+  let hooksOk: boolean | undefined;
+  let codexHookOk: boolean | undefined;
+  let claudeHookOk: boolean | undefined;
+
+  if (enabled) {
+    try {
+      validateConfig(await loadNotifierConfig(context));
+      configurationOk = true;
+    } catch {
+      configurationOk = false;
+    }
+    try {
+      const hooks = await inspectHooks();
+      codexHookOk = hooks.codexInstalled;
+      claudeHookOk = hooks.claudeStopInstalled
+        && hooks.claudeStopFailureInstalled
+        && (deliveryTiming === "completion" || hooks.claudeMessageDisplayInstalled);
+      hooksOk = codexHookOk && claudeHookOk;
+    } catch {
+      hooksOk = false;
+    }
+  }
+
+  if (refreshId !== statusRefreshId) {
+    return;
+  }
+  statusSnapshot = {
+    initializing: false,
+    enabled,
+    workspacePaused: isWorkspacePaused(context),
+    receiverPort: hookServer?.port,
+    configurationOk,
+    hooksOk,
+    deliveryTiming,
+    deliveryMode,
+    pendingCount,
+    activeDeliveries,
+    codexHookOk,
+    claudeHookOk,
+    claudeSource: claudeRealtimeSource,
+    lastDeliverySuccess,
+    lastDeliveryError
+  };
+  renderStatusBar();
+}
+
+function renderStatusBar(): void {
   if (!statusBar) {
     return;
   }
-  if (!getSetting<boolean>("enabled", true)) {
-    statusBar.text = "$(bell-slash) 飞书 Agent";
-    statusBar.tooltip = "Feishu Agent Notifier 已禁用";
+  const presentation = buildStatusPresentation({
+    ...statusSnapshot,
+    activeDeliveries,
+    claudeSource: claudeRealtimeSource,
+    lastDeliverySuccess,
+    lastDeliveryError
+  });
+  statusBar.text = presentation.text;
+  statusBar.backgroundColor = presentation.severity === "error"
+    ? new vscode.ThemeColor("statusBarItem.errorBackground")
+    : presentation.severity === "warning"
+      ? new vscode.ThemeColor("statusBarItem.warningBackground")
+      : undefined;
+  statusBar.accessibilityInformation = {
+    label: `Feishu Agent Notifier：${presentation.summary}`
+  };
+  const tooltip = new vscode.MarkdownString();
+  tooltip.appendMarkdown("**Feishu Agent Notifier**\n\n");
+  tooltip.appendMarkdown(`${escapeMarkdown(presentation.summary)}\n\n`);
+  for (const detail of presentation.details) {
+    tooltip.appendMarkdown(`- ${escapeMarkdown(detail)}\n`);
+  }
+  tooltip.appendMarkdown("\n点击打开通知操作菜单。");
+  statusBar.tooltip = tooltip;
+}
+
+interface StatusActionItem extends vscode.QuickPickItem {
+  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "settings" | "logs";
+}
+
+async function showStatus(context: vscode.ExtensionContext): Promise<void> {
+  await refreshStatusBar(context);
+  const presentation = buildStatusPresentation(statusSnapshot);
+  const items: Array<StatusActionItem | vscode.QuickPickItem> = [];
+  if (workspaceRoots().length > 0) {
+    items.push({
+      label: isWorkspacePaused(context) ? "$(play) 恢复当前工作区通知" : "$(debug-pause) 暂停当前工作区通知",
+      description: "只影响当前 VS Code 工作区",
+      action: "pause"
+    });
+  }
+  items.push(
+    { label: "$(send) 发送飞书测试消息", action: "test" },
+    ...(statusSnapshot.pendingCount > 0
+      ? [{ label: `$(sync) 重试 ${statusSnapshot.pendingCount} 条待处理通知`, action: "retry" as const }]
+      : []),
+    { label: "", kind: vscode.QuickPickItemKind.Separator },
+    { label: "$(tools) 安装/修复 Agent 通知接入", action: "repair" },
+    { label: "$(checklist) 运行完整自检", action: "diagnostics" },
+    { label: "$(gear) 打开扩展设置", action: "settings" },
+    { label: "$(output) 查看运行日志", action: "logs" }
+  );
+  const selection = await vscode.window.showQuickPick(items, {
+    title: "Feishu Agent Notifier",
+    placeHolder: presentation.summary,
+    matchOnDescription: true
+  }) as StatusActionItem | undefined;
+  if (!selection?.action) {
     return;
   }
-  if (hookServer?.port) {
-    statusBar.text = "$(bell) 飞书 Agent";
-    statusBar.tooltip = `正在监听 127.0.0.1:${hookServer.port} · ${getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime" ? "实时逐条" : "仅结束"}`;
-  } else {
-    statusBar.text = "$(warning) 飞书 Agent";
-    statusBar.tooltip = "本地 Hook 接收器未运行；点击查看状态";
+  switch (selection.action) {
+    case "pause":
+      await toggleWorkspacePause(context);
+      break;
+    case "test":
+      await sendTestNotification(context);
+      break;
+    case "retry":
+      await retryPendingEvents(context, true);
+      break;
+    case "repair":
+      await installHookFiles(context);
+      break;
+    case "diagnostics":
+      await runDiagnostics(context);
+      break;
+    case "settings":
+      await openSettings();
+      break;
+    case "logs":
+      output?.show(true);
+      break;
   }
 }
 
-async function showStatus(): Promise<void> {
-  const mode = getSetting<DeliveryMode>("deliveryMode", "webhook");
-  const timing = getSetting<DeliveryTiming>("deliveryTiming", "realtime");
-  const pending = await pendingEventCount(pendingDirectory());
-  const receiver = hookServer?.port
-    ? `运行中（127.0.0.1:${hookServer.port}）`
-    : "未运行或由另一个 VS Code 窗口占用";
-  const selection = await vscode.window.showInformationMessage(
-    `Feishu Agent Notifier：${receiver}；${timing === "realtime" ? "实时逐条" : "仅结束"}；投递模式：${mode}；待处理：${pending}。`,
-    "打开设置",
-    "运行自检",
-    "查看日志"
-  );
-  if (selection === "打开设置") {
-    await openSettings();
-  } else if (selection === "运行自检") {
-    await vscode.commands.executeCommand("feishuAgentNotifier.runDiagnostics");
-  } else if (selection === "查看日志") {
-    output?.show(true);
+async function toggleWorkspacePause(context: vscode.ExtensionContext): Promise<void> {
+  if (workspaceRoots().length === 0) {
+    await vscode.window.showWarningMessage("请先打开一个文件夹或工作区，再暂停项目通知。");
+    return;
   }
+  const paused = !isWorkspacePaused(context);
+  await context.workspaceState.update(WORKSPACE_PAUSED_KEY, paused);
+  output?.info(`当前工作区通知已${paused ? "暂停" : "恢复"}。`);
+  await refreshStatusBar(context);
+  await vscode.window.showInformationMessage(`当前工作区的飞书 Agent 通知已${paused ? "暂停" : "恢复"}。`);
 }
 
 async function retryPendingEvents(context: vscode.ExtensionContext, userInitiated: boolean): Promise<void> {
@@ -567,12 +722,13 @@ async function retryPendingEvents(context: vscode.ExtensionContext, userInitiate
     const result = await drainPendingEvents(
       pendingDirectory(),
       async (event) => enqueueEvent(context, sender, event, false),
-      (filePath, error) => output?.warn(`已隔离无效待处理文件 ${filePath}：${error.message}`)
+      (filePath, error) => output?.warn(`已隔离无效待处理文件 ${filePath}：${error.message}`),
+      (event) => isWorkspacePaused(context) && eventBelongsToWorkspace(event.cwd, workspaceRoots())
     );
     if (result.delivered > 0) {
       output?.info(`已补投 ${result.delivered} 条待处理 Agent 通知。`);
     }
-    updateStatusBar();
+    await refreshStatusBar(context);
     if (userInitiated) {
       const summary = result.remaining === 0
         ? `待处理通知重试完成：成功 ${result.delivered} 条。`
@@ -585,7 +741,7 @@ async function retryPendingEvents(context: vscode.ExtensionContext, userInitiate
   return pendingDrain;
 }
 
-async function clearPendingEvents(): Promise<void> {
+async function clearPendingEvents(context: vscode.ExtensionContext): Promise<void> {
   const count = await pendingEventCount(pendingDirectory());
   if (count === 0) {
     await vscode.window.showInformationMessage("没有待处理的 Agent 通知。 ");
@@ -605,6 +761,7 @@ async function clearPendingEvents(): Promise<void> {
     .map((entry) => path.join(pendingDirectory(), entry.name));
   await Promise.all(targets.map((filePath) => fs.rm(filePath, { force: true })));
   output?.info(`已永久删除 ${targets.length} 条待处理 Agent 通知。`);
+  await refreshStatusBar(context);
   await vscode.window.showInformationMessage(`已删除 ${targets.length} 条待处理 Agent 通知。`);
 }
 
@@ -701,6 +858,18 @@ function checkLine(name: string, ok: boolean, detail = ""): string {
 
 function formatDiagnosticTime(value: string): string {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function isWorkspacePaused(context: vscode.ExtensionContext): boolean {
+  return context.workspaceState.get<boolean>(WORKSPACE_PAUSED_KEY, false);
+}
+
+function workspaceRoots(): string[] {
+  return vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/([\\`*_{}[\]()<>#+\-.!|])/g, "\\$1");
 }
 
 async function openSettings(): Promise<void> {

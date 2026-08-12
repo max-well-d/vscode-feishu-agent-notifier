@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send every Codex or Claude Code assistant message to Feishu in realtime, with completion and local notification modes.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -49,6 +49,7 @@
     "onCommand:feishuAgentNotifier.clearSecrets",
     "onCommand:feishuAgentNotifier.openSettings",
     "onCommand:feishuAgentNotifier.showStatus",
+    "onCommand:feishuAgentNotifier.toggleWorkspacePause",
     "onCommand:feishuAgentNotifier.runDiagnostics",
     "onCommand:feishuAgentNotifier.retryPending",
     "onCommand:feishuAgentNotifier.clearPending"
@@ -86,7 +87,11 @@
       },
       {
         "command": "feishuAgentNotifier.showStatus",
-        "title": "飞书 Agent 通知：查看状态"
+        "title": "飞书 Agent 通知：打开状态与操作菜单"
+      },
+      {
+        "command": "feishuAgentNotifier.toggleWorkspacePause",
+        "title": "飞书 Agent 通知：暂停/恢复当前工作区通知"
       },
       {
         "command": "feishuAgentNotifier.runDiagnostics",

@@ -90,7 +90,8 @@ export async function listPendingEvents(directory: string): Promise<PendingEvent
 export async function drainPendingEvents(
   directory: string,
   deliver: (event: AgentEvent) => Promise<void>,
-  onInvalid: (filePath: string, error: Error) => void = () => undefined
+  onInvalid: (filePath: string, error: Error) => void = () => undefined,
+  shouldDefer: (event: AgentEvent) => boolean = () => false
 ): Promise<PendingDrainResult> {
   let delivered = 0;
   let invalid = 0;
@@ -105,6 +106,10 @@ export async function drainPendingEvents(
       invalid += 1;
       onInvalid(filePath, error as Error);
       await quarantineInvalidFile(filePath);
+      continue;
+    }
+
+    if (shouldDefer(entry.event)) {
       continue;
     }
 

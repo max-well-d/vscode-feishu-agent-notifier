@@ -53,3 +53,32 @@ test("keeps queued events when delivery fails", async (t) => {
   assert.equal(result.delivered, 0);
   assert.equal(result.remaining, 1);
 });
+
+test("defers paused-workspace events without blocking other queued projects", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-pending-defer-test-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  for (const [name, cwd, message] of [
+    ["001.json", "/work/paused", "保留"],
+    ["002.json", "/work/active", "发送"]
+  ]) {
+    await fs.writeFile(path.join(root, name), JSON.stringify({
+      event: {
+        __notifier_source: "codex",
+        type: "agent-turn-complete",
+        cwd,
+        "last-assistant-message": message
+      }
+    }), "utf8");
+  }
+
+  const delivered: string[] = [];
+  const result = await drainPendingEvents(
+    root,
+    async (event) => { delivered.push(event.message); },
+    () => undefined,
+    (event) => event.cwd === "/work/paused"
+  );
+  assert.deepEqual(delivered, ["发送"]);
+  assert.equal(result.delivered, 1);
+  assert.equal(result.remaining, 1);
+});

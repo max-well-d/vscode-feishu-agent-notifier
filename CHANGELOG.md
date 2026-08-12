@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
+- Add a live Feishu status center to the left side of the VS Code status bar.
+- Show initializing, realtime, completion-only, sending, paused, configuration, Hook, queue, receiver, and delivery-error states.
+- Add a Markdown hover summary for receiver, Codex, Claude Code, queue, and recent delivery health.
+- Replace the status popup with a compact action menu for testing, pausing, retrying, repairing, diagnostics, settings, and logs.
+- Add a workspace-scoped pause that filters matching live events while retaining paused queued events for later delivery.
 - Remove obsolete local VSIX build artifacts from the development workspace.
 - Make credential-migration documentation version-independent.
 - Update official GitHub Actions from v4 to v7.
