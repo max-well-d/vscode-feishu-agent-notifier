@@ -4,7 +4,8 @@
 
 ## 特性
 
-- 支持 Codex 官方 `notify` 回调，无需在 CLI 中执行 `/hooks` 信任。
+- 支持 Codex CLI 官方 `notify` 回调，无需在 CLI 中执行 `/hooks` 信任。
+- 支持 Codex VS Code IDE：监听新增的本地 transcript `task_complete` 事件，弥补当前 app-server 不调用 `notify` 的差异。
 - 支持 Claude Code `Stop` 和 `StopFailure` Hooks。
 - Codex 从命令行参数接收 `agent-turn-complete` JSON；Claude Code 从 stdin 接收 Hook JSON。
 - 最终回复不截断；超过单条上限时按 Unicode 字符自动分片。
@@ -22,7 +23,7 @@ cd vscode-feishu-agent-notifier
 npm install
 npm test
 npm run package
-code --install-extension .\feishu-agent-notifier-0.2.0.vsix
+code --install-extension .\feishu-agent-notifier-0.3.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -67,7 +68,9 @@ code --install-extension .\feishu-agent-notifier-0.2.0.vsix
 - `~/.codex/config.toml`：写入 Codex `notify` 命令
 - `~/.claude/settings.json`
 
-安装器会删除本扩展旧版本写入 `~/.codex/hooks.json` 的 Codex `Stop` Hook，避免重复发送。Codex `notify` 不经过非托管 Hook 信任流程，因此 VS Code Codex 界面无需提供 `/hooks` 命令。
+安装器会删除本扩展旧版本写入 `~/.codex/hooks.json` 的 Codex `Stop` Hook，避免重复发送。Codex CLI 的 `notify` 不经过非托管 Hook 信任流程，因此无需 `/hooks`。Codex IDE 当前使用 app-server，不会稳定调用该 `notify`；扩展因此只监听启动以后新增到 `~/.codex/sessions` 的 `task_complete`，不会补发历史回复。CLI 与 IDE 事件通过 session/turn ID 去重。
+
+`watchCodexIde` 默认开启。该兼容层依赖 Codex 本地 transcript 格式；如果未来 Codex IDE 原生支持外部完成通知，可以关闭该设置。扩展只读取最终完成事件中的 `last_agent_message`，不会发送推理内容或工具调用记录。
 
 扩展或 VS Code 没有运行时，本地接收器不可用，转发脚本会安全退出，Codex/Claude Code 本身不会被阻塞。
 

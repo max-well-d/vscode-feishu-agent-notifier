@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Detect Codex IDE/app-server completion by watching newly appended local transcript `task_complete` events.
+- Read the complete `last_agent_message` from the completion event.
+- Baseline existing transcript files on startup so historical messages are never replayed.
+- Deduplicate IDE transcript events against Codex CLI `notify` events by session and turn ID.
+- Add `watchCodexIde` to disable the compatibility watcher when desired.
+
 ## 0.2.0
 
 - Use Codex's official `notify` callback so Codex IDE notifications do not require CLI `/hooks` trust.

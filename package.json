@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send the complete final Codex or Claude Code response to Feishu when a turn ends.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -176,6 +176,13 @@
           "scope": "machine",
           "order": 33,
           "description": "Claude Code StopFailure 等失败事件也发送通知。"
+        },
+        "feishuAgentNotifier.watchCodexIde": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 34,
+          "description": "监听本机 Codex IDE transcript 的 task_complete 事件，以覆盖当前 app-server 不调用 notify 的情况。"
         }
       }
     }

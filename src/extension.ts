@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
+import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
 import { eventDeduplicationKey } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { installHooks, uninstallHooks } from "./hookInstaller";
@@ -15,6 +16,7 @@ const SECRET_APP_SECRET = "feishuAgentNotifier.appSecret";
 const SECRET_HOOK_TOKEN = "feishuAgentNotifier.hookToken";
 
 let hookServer: LocalHookServer | undefined;
+let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.LogOutputChannel | undefined;
 let sendQueue: Promise<void> = Promise.resolve();
@@ -50,11 +52,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export async function deactivate(): Promise<void> {
+  codexTranscriptWatcher?.stop();
+  codexTranscriptWatcher = undefined;
   await hookServer?.stop();
   hookServer = undefined;
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
+  codexTranscriptWatcher?.stop();
+  codexTranscriptWatcher = undefined;
   await hookServer?.stop();
   hookServer = undefined;
   if (!getSetting<boolean>("enabled", true)) {
@@ -72,6 +78,16 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   try {
     await hookServer.start(port);
     output?.info(`本地 Hook 接收器正在监听 127.0.0.1:${port}`);
+    if (getSetting<boolean>("watchCodexIde", true)) {
+      codexTranscriptWatcher = new CodexTranscriptWatcher(
+        async (event) => enqueueEvent(context, sender, event),
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
+        undefined,
+        (error) => output?.warn(`Codex IDE transcript 监听失败：${error.message}`)
+      );
+      await codexTranscriptWatcher.start();
+      output?.info("Codex IDE transcript 完成事件监听已启动。");
+    }
   } catch (error) {
     hookServer = undefined;
     const message = (error as NodeJS.ErrnoException).code === "EADDRINUSE"
