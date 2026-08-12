@@ -1,0 +1,195 @@
+{
+  "name": "feishu-agent-notifier",
+  "displayName": "Feishu Agent Notifier",
+  "description": "Send the complete final Codex or Claude Code response to Feishu when a turn ends.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "feishu",
+    "lark",
+    "codex",
+    "claude-code",
+    "notification"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:feishuAgentNotifier.installHooks",
+    "onCommand:feishuAgentNotifier.uninstallHooks",
+    "onCommand:feishuAgentNotifier.testNotification",
+    "onCommand:feishuAgentNotifier.storeSecrets",
+    "onCommand:feishuAgentNotifier.clearSecrets",
+    "onCommand:feishuAgentNotifier.openSettings",
+    "onCommand:feishuAgentNotifier.showStatus"
+  ],
+  "main": "./out/src/extension.js",
+  "files": [
+    "out/src",
+    "scripts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "feishuAgentNotifier.installHooks",
+        "title": "飞书 Agent 通知：安装/更新 Codex 与 Claude Code Hooks"
+      },
+      {
+        "command": "feishuAgentNotifier.uninstallHooks",
+        "title": "飞书 Agent 通知：卸载 Hooks"
+      },
+      {
+        "command": "feishuAgentNotifier.testNotification",
+        "title": "飞书 Agent 通知：发送测试消息"
+      },
+      {
+        "command": "feishuAgentNotifier.storeSecrets",
+        "title": "飞书 Agent 通知：安全保存飞书凭据"
+      },
+      {
+        "command": "feishuAgentNotifier.clearSecrets",
+        "title": "飞书 Agent 通知：清除安全凭据"
+      },
+      {
+        "command": "feishuAgentNotifier.openSettings",
+        "title": "飞书 Agent 通知：打开设置"
+      },
+      {
+        "command": "feishuAgentNotifier.showStatus",
+        "title": "飞书 Agent 通知：查看状态"
+      }
+    ],
+    "configuration": {
+      "title": "Feishu Agent Notifier",
+      "type": "object",
+      "properties": {
+        "feishuAgentNotifier.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 1,
+          "description": "启动本机 Hook 接收器并发送飞书通知。"
+        },
+        "feishuAgentNotifier.deliveryMode": {
+          "type": "string",
+          "enum": [
+            "webhook",
+            "app"
+          ],
+          "enumDescriptions": [
+            "飞书群自定义机器人。目标群由 Webhook 决定，配置最简单。",
+            "飞书自建应用机器人。可通过 receiveId 指定用户、邮箱或群聊。"
+          ],
+          "default": "webhook",
+          "scope": "machine",
+          "order": 2,
+          "description": "飞书投递模式。"
+        },
+        "feishuAgentNotifier.webhookUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "ignoreSync": true,
+          "order": 10,
+          "markdownDescription": "群自定义机器人 Webhook。建议使用“安全保存飞书凭据”命令；设置中的值会以明文保存在 settings.json。"
+        },
+        "feishuAgentNotifier.webhookSecret": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "ignoreSync": true,
+          "order": 11,
+          "markdownDescription": "自定义机器人的签名密钥，可留空。安全凭据中保存的值优先。"
+        },
+        "feishuAgentNotifier.appId": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "ignoreSync": true,
+          "order": 20,
+          "description": "飞书自建应用 App ID。"
+        },
+        "feishuAgentNotifier.appSecret": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "ignoreSync": true,
+          "order": 21,
+          "markdownDescription": "飞书自建应用 App Secret。建议使用安全保存命令；安全凭据中的值优先。"
+        },
+        "feishuAgentNotifier.receiveIdType": {
+          "type": "string",
+          "enum": [
+            "open_id",
+            "user_id",
+            "email",
+            "chat_id"
+          ],
+          "default": "chat_id",
+          "scope": "machine",
+          "order": 22,
+          "description": "应用机器人目标 ID 类型。"
+        },
+        "feishuAgentNotifier.receiveId": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "order": 23,
+          "description": "应用机器人的目标用户、邮箱或群聊 ID。"
+        },
+        "feishuAgentNotifier.port": {
+          "type": "integer",
+          "default": 37561,
+          "minimum": 1024,
+          "maximum": 65535,
+          "scope": "machine",
+          "order": 30,
+          "description": "VS Code 本地 Hook 接收器端口，仅监听 127.0.0.1。修改后需要重新安装 Hooks。"
+        },
+        "feishuAgentNotifier.includeMetadata": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 31,
+          "description": "在完整回复之前附加 Agent、项目、状态和时间。"
+        },
+        "feishuAgentNotifier.maxChunkCharacters": {
+          "type": "integer",
+          "default": 12000,
+          "minimum": 1000,
+          "maximum": 20000,
+          "scope": "machine",
+          "order": 32,
+          "description": "每条飞书文本消息的最大字符数。更长的最终回复会自动分片，内容不会截断。"
+        },
+        "feishuAgentNotifier.notifyOnFailure": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 33,
+          "description": "Claude Code StopFailure 等失败事件也发送通知。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test out/test/*.test.js",
+    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.106.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}

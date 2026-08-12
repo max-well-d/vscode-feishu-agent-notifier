@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { FeishuSender, createWebhookSignature, validateConfig } from "../src/feishu";
+import { AgentEvent, NotifierConfig } from "../src/types";
+
+const event: AgentEvent = {
+  source: "codex",
+  eventName: "Stop",
+  status: "completed",
+  sessionId: "s1",
+  turnId: "t1",
+  cwd: "/work/project",
+  project: "project",
+  message: "最终回复全部内容",
+  occurredAt: "2026-08-12T00:00:00.000Z"
+};
+
+const webhookConfig: NotifierConfig = {
+  deliveryMode: "webhook",
+  webhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test",
+  webhookSecret: "secret",
+  appId: "",
+  appSecret: "",
+  receiveIdType: "chat_id",
+  receiveId: "",
+  includeMetadata: false,
+  maxChunkCharacters: 12000,
+  notifyOnFailure: true
+};
+
+test("creates deterministic Feishu webhook signatures", () => {
+  assert.equal(
+    createWebhookSignature("1700000000", "secret"),
+    createWebhookSignature("1700000000", "secret")
+  );
+  assert.notEqual(
+    createWebhookSignature("1700000000", "secret"),
+    createWebhookSignature("1700000001", "secret")
+  );
+});
+
+test("sends webhook text with the complete final response", async () => {
+  const requests: Array<{ url: string; body: any }> = [];
+  const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: JSON.parse(String(init?.body))
+    });
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), { status: 200 });
+  }) as typeof fetch;
+
+  const sender = new FeishuSender(fakeFetch);
+  const count = await sender.sendEvent(event, webhookConfig);
+  assert.equal(count, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.content.text, event.message);
+  assert.equal(requests[0].body.msg_type, "text");
+  assert.ok(requests[0].body.timestamp);
+  assert.ok(requests[0].body.sign);
+});
+
+test("app mode fetches a token and sends to the configured target", async () => {
+  const urls: string[] = [];
+  const bodies: any[] = [];
+  const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    urls.push(url);
+    bodies.push(JSON.parse(String(init?.body)));
+    if (url.includes("tenant_access_token")) {
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: "success",
+        tenant_access_token: "token",
+        expire: 3600
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), { status: 200 });
+  }) as typeof fetch;
+
+  const config: NotifierConfig = {
+    ...webhookConfig,
+    deliveryMode: "app",
+    appId: "cli_test",
+    appSecret: "app-secret",
+    receiveIdType: "email",
+    receiveId: "developer@example.com"
+  };
+  const sender = new FeishuSender(fakeFetch);
+  await sender.sendEvent(event, config);
+
+  assert.equal(urls.length, 2);
+  assert.match(urls[1], /receive_id_type=email/);
+  assert.equal(bodies[1].receive_id, "developer@example.com");
+  assert.deepEqual(JSON.parse(bodies[1].content), { text: event.message });
+});
+
+test("rejects non-Feishu webhook hosts", () => {
+  assert.throws(
+    () => validateConfig({ ...webhookConfig, webhookUrl: "https://example.com/hook" }),
+    /open\.feishu\.cn/
+  );
+});

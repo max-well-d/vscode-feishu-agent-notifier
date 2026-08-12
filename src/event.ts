@@ -1,0 +1,88 @@
+import path from "node:path";
+import { AgentEvent } from "./types";
+
+type UnknownRecord = Record<string, unknown>;
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
+  const codexNotify = input.type === "agent-turn-complete";
+  const sourceHint = stringValue(input.__notifier_source);
+  const source = codexNotify || sourceHint === "codex"
+    ? "codex"
+    : sourceHint === "claude-code" || typeof input.hook_event_name === "string"
+      ? "claude-code"
+      : "unknown";
+
+  const eventName = stringValue(input.type)
+    || stringValue(input.hook_event_name)
+    || "Stop";
+  const failed = eventName === "StopFailure"
+    || stringValue(input.error).length > 0;
+  const cwd = stringValue(input.cwd);
+
+  const message = stringValue(input["last-assistant-message"])
+    || stringValue(input.last_assistant_message)
+    || stringValue(input.message)
+    || (failed ? "Agent 在完成回复前失败。" : "Agent 已结束，但没有提供最终回复内容。");
+
+  return {
+    source,
+    eventName,
+    status: failed ? "failed" : "completed",
+    sessionId: stringValue(input["thread-id"]) || stringValue(input.session_id),
+    turnId: stringValue(input["turn-id"]) || stringValue(input.turn_id) || stringValue(input.prompt_id),
+    cwd,
+    project: cwd ? path.basename(cwd) : "unknown-project",
+    message,
+    occurredAt: new Date().toISOString()
+  };
+}
+
+export function eventDeduplicationKey(event: AgentEvent): string {
+  return [event.source, event.sessionId, event.turnId, event.eventName].join(":");
+}
+
+export function formatEventMessage(event: AgentEvent, includeMetadata: boolean): string {
+  if (!includeMetadata) {
+    return event.message;
+  }
+
+  const source = event.source === "claude-code"
+    ? "Claude Code"
+    : event.source === "codex"
+      ? "Codex"
+      : "Agent";
+  const status = event.status === "failed" ? "❌ 执行失败" : "✅ 已完成";
+  const metadata = [
+    `工具：${source}`,
+    `项目：${event.project}`,
+    `状态：${status}`,
+    `时间：${new Date(event.occurredAt).toLocaleString("zh-CN", { hour12: false })}`
+  ];
+
+  return `${metadata.join("\n")}\n\n${event.message}`;
+}
+
+export function splitMessage(message: string, maximumCharacters: number): string[] {
+  const limit = Math.max(1, maximumCharacters);
+  const codePoints = Array.from(message);
+  if (codePoints.length <= limit) {
+    return [message];
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < codePoints.length; index += limit) {
+    chunks.push(codePoints.slice(index, index + limit).join(""));
+  }
+  return chunks;
+}
+
+export function addChunkLabels(chunks: string[]): string[] {
+  if (chunks.length <= 1) {
+    return chunks;
+  }
+  return chunks.map((chunk, index) => `【${index + 1}/${chunks.length}】\n${chunk}`);
+}
