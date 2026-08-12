@@ -16,6 +16,7 @@ export interface AgentEvent {
   turnId: string;
   cwd: string;
   project: string;
+  sessionName?: string;
   message: string;
   occurredAt: string;
 }
@@ -54,10 +55,14 @@ export interface AgentSession {
   project: string;
   lastSeenAt: string;
   status: AgentEvent["status"];
+  name?: string;
   alias?: string;
   ownership?: AgentSessionOwnership;
   completionEvidence?: SessionCompletionEvidence;
   managedBackend?: "codex-app-server" | "claude-cli";
+  lastCompletedTurnId?: string;
+  forkedFromSessionId?: string;
+  forkedFromTurnId?: string;
 }
 
 export interface InboundReplyContext {

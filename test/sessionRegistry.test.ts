@@ -29,12 +29,13 @@ test("persists message routes, chat selection, aliases, and inbound deduplicatio
     version: number;
     messages: Record<string, { kind?: string; eventStatus?: string }>;
   };
-  assert.equal(stored.version, 2);
+  assert.equal(stored.version, 3);
   assert.deepEqual(stored.messages.om_1, {
     sessionKey: "codex:session-1",
     createdAt: "2026-08-13T01:00:00.000Z",
     kind: "agent-event",
-    eventStatus: "completed"
+    eventStatus: "completed",
+    turnId: "turn-1"
   });
   assert.equal(await registry.claimInbound("incoming-1"), true);
   assert.equal(await registry.claimInbound("incoming-1"), false);
@@ -155,7 +156,36 @@ test("migrates a pre-0.13 quoted completion route as authoritative evidence", as
   assert.equal((await registry.getSession("disk-only"))?.completionEvidence, "discovered");
   await registry.cleanup();
   const persisted = JSON.parse(await fs.readFile(file, "utf8")) as { version: number };
-  assert.equal(persisted.version, 2);
+  assert.equal(persisted.version, 3);
+});
+
+test("persists an exact completion-to-managed-branch binding across reloads", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-branch-"));
+  const file = path.join(root, "registry.json");
+  const registry = new SessionRegistry(file);
+  await registry.recordDelivery(event, [{ messageId: "source-card", chunkIndex: 1 }]);
+  const source = (await registry.resolveMessage("source-card"))!;
+  const forked = await registry.recordRemoteBranch(source, event.turnId, {
+    ...source,
+    sessionId: "managed-fork",
+    name: "demo · 飞书",
+    ownership: "managed",
+    managedBackend: "codex-app-server",
+    forkedFromSessionId: source.sessionId,
+    forkedFromTurnId: event.turnId
+  }, "oc_branch");
+  assert.equal(forked.sessionId, "managed-fork");
+
+  const reloaded = new SessionRegistry(file);
+  const resolved = await reloaded.resolveMessageContext("source-card");
+  assert.equal(resolved?.session.sessionId, "managed-fork");
+  assert.equal(resolved?.session.name, "demo · 飞书");
+  assert.equal(resolved?.turnId, "turn-1");
+  assert.equal((await reloaded.selectedForChat("oc_branch"))?.sessionId, "managed-fork");
+  assert.equal((await reloaded.getSession("session-1"))?.sessionId, "session-1");
+
+  await reloaded.updateExecutionState(forked, "completed", forked.sessionId, "fork-turn-2");
+  assert.equal((await reloaded.resolveMessageContext("source-card"))?.turnId, "fork-turn-2");
 });
 
 test("does not upgrade a stale legacy progress route into completion evidence", async () => {

@@ -33,6 +33,7 @@ import {
 import { drainPendingEvents, pendingEventCount, queuePendingEvent } from "./pendingQueue";
 import {
   AgentEvent,
+  AgentSession,
   DeliveryMode,
   DeliveryTiming,
   MessageFormat,
@@ -353,7 +354,27 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
         await refreshAgentExecutables();
         return agentExecutablePaths[source];
       },
-      codexAppServerClient
+      codexAppServerClient,
+      async (job, forked) => {
+        if (!sessionRegistry || !job.anchorTurnId) {
+          throw new Error("会话注册表或分支 turnId 不可用");
+        }
+        const persisted = await sessionRegistry.recordRemoteBranch(
+          job.originalSession,
+          job.anchorTurnId,
+          forked,
+          job.chatId
+        );
+        Object.assign(forked, persisted);
+        const replyId = await replyToInbound(
+          job.inboundMessageId,
+          job.chatId,
+          `原会话正在本机 Codex 中打开，已创建持久化远程分支：${formatAgentSession(forked)}\n后续飞书回复将继续绑定该分支。`
+        );
+        if (replyId) {
+          await sessionRegistry.recordMessageRoute(replyId, forked);
+        }
+      }
     ),
     1,
     {
@@ -364,9 +385,9 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
           Object.assign(job.session, updated);
         }
         const replyId = await replyToInbound(job.inboundMessageId, job.chatId,
-          `开始执行：${job.session.source === "codex" ? "Codex" : "Claude Code"}/${job.session.project}`);
+          `开始执行：${formatAgentSession(job.session)}`);
         if (replyId) {
-          await sessionRegistry?.recordMessageRoute(replyId, job.session);
+          await sessionRegistry?.recordMessageRoute(replyId, job.session, job.anchorTurnId);
         }
         void refreshStatusBar(context);
       },
@@ -379,18 +400,23 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
           output?.error(`飞书远程回复失败 ${job.session.source}/${job.session.sessionId}：${result.message}`);
           const replyId = await replyToInbound(job.inboundMessageId, job.chatId, `执行失败：${result.message}`);
           if (replyId) {
-            await sessionRegistry?.recordMessageRoute(replyId, job.session);
+            await sessionRegistry?.recordMessageRoute(replyId, job.session, job.anchorTurnId);
           }
         } else {
-          const updated = await sessionRegistry?.updateExecutionState(job.session, "completed", result.sessionId);
+          const updated = await sessionRegistry?.updateExecutionState(
+            job.session,
+            "completed",
+            result.sessionId,
+            result.turnId
+          );
           if (updated) {
             Object.assign(job.session, updated);
           }
           output?.info(`飞书远程回复完成 ${job.session.source}/${job.session.sessionId}，耗时 ${result.durationMs}ms。`);
           const replyId = await replyToInbound(job.inboundMessageId, job.chatId,
-            `执行完成：${job.session.source === "codex" ? "Codex" : "Claude Code"}/${job.session.project}\nAgent 输出将通过正常通知通道发送。`);
+            `执行完成：${formatAgentSession(job.session)}\nAgent 输出将通过正常通知通道发送。`);
           if (replyId) {
-            await sessionRegistry?.recordMessageRoute(replyId, job.session);
+            await sessionRegistry?.recordMessageRoute(replyId, job.session, result.turnId ?? job.anchorTurnId);
           }
         }
         void refreshStatusBar(context);
@@ -430,11 +456,11 @@ function createReplyRouter(context: vscode.ExtensionContext): ReplyRouter {
     defaultWorkspace: () => vscode.workspace.workspaceFolders?.[0]
       ? { cwd: vscode.workspace.workspaceFolders[0].uri.fsPath, project: vscode.workspace.workspaceFolders[0].name }
       : undefined,
-    createManagedCodexSession: async (cwd, project, policy) => {
+    createManagedCodexSession: async (cwd, project, policy, name) => {
       if (!codexAppServerClient || !sessionRegistry) {
         throw new Error("Codex App Server 托管执行器尚未初始化");
       }
-      const session = await codexAppServerClient.startThread(cwd, project, policy);
+      const session = await codexAppServerClient.startThread(cwd, project, policy, name);
       return sessionRegistry.recordManagedSession(session);
     },
     steerManagedCodex: async (session, prompt) => {
@@ -535,6 +561,33 @@ async function refreshLocalSessionCatalog(): Promise<void> {
   output?.debug(`本地会话目录已刷新：发现 ${sessions.length}，更新 ${changed}。`);
 }
 
+async function enrichAgentEventSessionName(event: AgentEvent): Promise<void> {
+  if (!event.sessionId) {
+    return;
+  }
+  const existing = await sessionRegistry?.getSession(`${event.source}:${event.sessionId}`);
+  if (existing?.alias) {
+    event.sessionName = existing.alias;
+    return;
+  }
+  if (event.source === "codex" && codexAppServerClient) {
+    try {
+      const metadata = await codexAppServerClient.readThreadMetadata(event.sessionId);
+      event.sessionName = metadata.name || event.sessionName || existing?.name;
+      return;
+    } catch (error) {
+      output?.debug(`读取 Codex 会话名称失败 ${event.sessionId.slice(0, 8)}：${(error as Error).message}`);
+    }
+  }
+  event.sessionName ||= existing?.name || existing?.project || event.project;
+}
+
+function formatAgentSession(session: AgentSession): string {
+  const source = session.source === "claude-code" ? "Claude Code" : "Codex";
+  const name = session.alias || session.name || session.project || path.basename(session.cwd) || "未命名";
+  return `${source}/${name} (${session.sessionId.slice(0, 8)})`;
+}
+
 async function replyToInbound(messageId: string, chatId: string, text: string): Promise<string | undefined> {
   if (!feishuInboundClient || feishuInboundState !== "connected") {
     output?.warn(`飞书入站未连接，无法回复消息 ${messageId.slice(0, 8)}。`);
@@ -570,7 +623,7 @@ async function showRemoteSessions(context: vscode.ExtensionContext): Promise<voi
     `远程状态：${remoteStatusText(context).replace(/\n/g, "；")}`,
     "",
     ...sessions.map((session, index) =>
-      `${index + 1}. **${session.alias || session.project || session.sessionId}** — ${session.source} — ${session.ownership === "managed" ? "飞书托管" : "外部"}/${session.status === "progress" ? "运行中" : session.completionEvidence === "authoritative" ? "已确认完成" : "未确认完成"} — ${session.sessionId} — ${session.cwd || "无工作目录"}`),
+      `${index + 1}. **${session.alias || session.name || session.project || session.sessionId}** — ${session.source} — ${session.ownership === "managed" ? "飞书托管" : "外部"}/${session.status === "progress" ? "运行中" : session.completionEvidence === "authoritative" ? "已确认完成" : "未确认完成"} — ${session.sessionId} — ${session.cwd || "无工作目录"}`),
     ""
   ].join("\n");
   const document = await vscode.workspace.openTextDocument({ content, language: "markdown" });
@@ -639,6 +692,7 @@ async function enqueueEventAsync(
   event: AgentEvent,
   queueOnFailure: boolean
 ): Promise<void> {
+  await enrichAgentEventSessionName(event);
   await sessionRegistry?.recordEvent(event);
   if (eventIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), event.cwd)) {
     output?.info(`当前工作区已暂停，跳过 ${event.source}/${event.project} 通知。`);

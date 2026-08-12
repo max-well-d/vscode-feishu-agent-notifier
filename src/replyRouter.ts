@@ -1,7 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { AgentReplyQueue } from "./agentReply";
-import { SessionRegistry } from "./sessionRegistry";
+import { ResolvedSessionContext, SessionRegistry } from "./sessionRegistry";
 import { AgentSession, InboundReplyContext, RemoteExecutionPolicy } from "./types";
 
 export interface ReplyRouterOptions {
@@ -15,7 +15,8 @@ export interface ReplyRouterOptions {
   createManagedCodexSession?: (
     cwd: string,
     project: string,
-    policy: RemoteExecutionPolicy
+    policy: RemoteExecutionPolicy,
+    name: string
   ) => Promise<AgentSession>;
   steerManagedCodex?: (session: AgentSession, prompt: string) => Promise<string>;
 }
@@ -36,12 +37,12 @@ export class ReplyRouter {
       await this.handleCommand(message, text);
       return;
     }
-    const session = await this.resolveContextSession(message);
-    if (!session) {
+    const context = await this.resolveContextSession(message);
+    if (!context) {
       await this.options.reply(message, "无法确定目标会话。请引用一条 Agent 通知，或先发送 /sessions 和 /use。 ");
       return;
     }
-    await this.enqueue(message, session, text);
+    await this.enqueue(message, context.session, text, context.turnId);
   }
 
   private async handleCommand(message: InboundReplyContext, text: string): Promise<void> {
@@ -69,8 +70,8 @@ export class ReplyRouter {
         return;
       }
       case "/alias": {
-        const session = await this.resolveContextSession(message);
-        if (!session) {
+        const context = await this.resolveContextSession(message);
+        if (!context) {
           await this.options.reply(message, "请引用一条 Agent 通知，或先用 /use 选择会话。 ");
           return;
         }
@@ -80,7 +81,7 @@ export class ReplyRouter {
           return;
         }
         try {
-          await this.options.registry.setAlias(session, alias);
+          await this.options.registry.setAlias(context.session, alias);
           await this.options.reply(message, `会话别名已设置为：${alias}`);
         } catch (error) {
           await this.options.reply(message, `设置别名失败：${(error as Error).message}`);
@@ -123,7 +124,12 @@ export class ReplyRouter {
             return;
           }
           try {
-            session = await this.options.createManagedCodexSession(workspace.cwd, workspace.project, policy);
+            session = await this.options.createManagedCodexSession(
+              workspace.cwd,
+              workspace.project,
+              policy,
+              remoteSessionName(prompt, workspace.project)
+            );
           } catch (error) {
             await this.options.reply(message, `创建托管 Codex 会话失败：${(error as Error).message}`);
             return;
@@ -136,6 +142,7 @@ export class ReplyRouter {
             project: workspace.project,
             lastSeenAt: new Date().toISOString(),
             status: "completed",
+            name: remoteSessionName(prompt, workspace.project),
             ownership: "managed",
             completionEvidence: "authoritative",
             managedBackend: "claude-cli"
@@ -147,7 +154,8 @@ export class ReplyRouter {
         return;
       }
       case "/steer": {
-        const session = await this.resolveContextSession(message);
+        const context = await this.resolveContextSession(message);
+        const session = context?.session;
         const prompt = rest.join(" ").trim();
         if (!session || !prompt) {
           await this.options.reply(message, "用法：引用正在运行的托管 Codex 消息并发送 /steer <追加指令>");
@@ -181,7 +189,12 @@ export class ReplyRouter {
     }
   }
 
-  private async enqueue(message: InboundReplyContext, session: AgentSession, prompt: string): Promise<void> {
+  private async enqueue(
+    message: InboundReplyContext,
+    session: AgentSession,
+    prompt: string,
+    anchorTurnId?: string
+  ): Promise<void> {
     const policy = this.options.policy();
     if (policy === "disabled") {
       await this.options.reply(message, "飞书远程回复已禁用。请在 VS Code 设置中启用后重试。 ");
@@ -207,6 +220,7 @@ export class ReplyRouter {
         chatId: message.chatId,
         inboundMessageId: message.messageId,
         session,
+        anchorTurnId,
         prompt,
         policy
       });
@@ -223,14 +237,18 @@ export class ReplyRouter {
       + `${waiting ? `\n队列位置：${result.position}` : ""}`
     );
     if (replyId) {
-      await this.options.registry.recordMessageRoute(replyId, session);
+      await this.options.registry.recordMessageRoute(replyId, session, anchorTurnId);
     }
   }
 
-  private async resolveContextSession(message: InboundReplyContext): Promise<AgentSession | undefined> {
-    return await this.options.registry.resolveMessage(message.parentMessageId)
-      ?? await this.options.registry.resolveMessage(message.rootMessageId)
-      ?? await this.options.registry.selectedForChat(message.chatId);
+  private async resolveContextSession(message: InboundReplyContext): Promise<ResolvedSessionContext | undefined> {
+    const quoted = await this.options.registry.resolveMessageContext(message.parentMessageId)
+      ?? await this.options.registry.resolveMessageContext(message.rootMessageId);
+    if (quoted) {
+      return quoted;
+    }
+    const selected = await this.options.registry.selectedForChat(message.chatId);
+    return selected ? { session: selected } : undefined;
   }
 
   private async resolveSelector(selector: string): Promise<AgentSession | undefined> {
@@ -265,9 +283,15 @@ function formatSessions(sessions: AgentSession[]): string {
 }
 
 function formatSession(session: AgentSession): string {
-  const name = session.alias || session.project || path.basename(session.cwd) || session.sessionId.slice(0, 8);
+  const name = session.alias || session.name || session.project || path.basename(session.cwd) || session.sessionId.slice(0, 8);
   const source = session.source === "claude-code" ? "Claude Code" : "Codex";
   return `${source}/${name} (${session.sessionId.slice(0, 8)})`;
+}
+
+function remoteSessionName(prompt: string, project: string): string {
+  const firstLine = prompt.split(/\r?\n/, 1)[0].replace(/\s+/g, " ").trim();
+  const content = Array.from(firstLine).slice(0, 48).join("");
+  return content ? `飞书 · ${content}` : `飞书 · ${project}`;
 }
 
 function formatTime(value: string): string {

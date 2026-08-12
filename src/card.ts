@@ -21,6 +21,9 @@ export function buildFeishuCard(
   const failed = event.status === "failed";
   const progress = event.status === "progress";
   const partLabel = part && part.total > 1 ? ` · ${part.index}/${part.total}` : "";
+  const sessionLabel = event.sessionName
+    ? `${truncate(event.sessionName, 48)} · ${event.sessionId.slice(0, 8)}`
+    : event.sessionId ? event.sessionId.slice(0, 8) : "未知会话";
   const header = includeMetadata
     ? {
       template: failed ? "red" : progress ? "blue" : "green",
@@ -30,7 +33,7 @@ export function buildFeishuCard(
       },
       subtitle: {
         tag: "plain_text",
-        content: `${event.project} · ${formatTime(event.occurredAt)}${partLabel}`
+        content: `${sessionLabel} · ${event.project} · ${formatTime(event.occurredAt)}${partLabel}`
       }
     }
     : {
@@ -172,4 +175,11 @@ function stripInlineMarkdown(value: string): string {
 
 function formatTime(value: string): string {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function truncate(value: string, maximum: number): string {
+  const characters = Array.from(value.trim());
+  return characters.length <= maximum
+    ? characters.join("")
+    : `${characters.slice(0, Math.max(1, maximum - 1)).join("")}…`;
 }

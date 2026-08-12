@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
-import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId, hasGitMetadataAncestor } from "../src/agentReply";
+import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId, extractCodexTurnId, hasGitMetadataAncestor, isCodexActiveWriterConflict, ManagedCodexExecutor } from "../src/agentReply";
 import { AgentSession } from "../src/types";
 
 const codex: AgentSession = {
@@ -89,3 +92,83 @@ test("extracts the actual Claude session id from stream-json output", () => {
   ].join("\n")), "claude-session-1");
   assert.equal(extractClaudeSessionId("plain diagnostics"), undefined);
 });
+
+test("extracts Codex turn ids and recognizes only the active-writer conflict", () => {
+  assert.equal(extractCodexTurnId([
+    '{"type":"turn.started","turn":{"id":"turn-remote"}}',
+    '{"type":"turn.completed","turn_id":"turn-remote"}'
+  ].join("\n")), "turn-remote");
+  assert.equal(isCodexActiveWriterConflict("thread-store conflict: thread x already has an active writer"), true);
+  assert.equal(isCodexActiveWriterConflict("Not inside a trusted directory"), false);
+});
+
+test("falls back to a persistent managed fork when Codex reports an active writer", async () => {
+  const source: AgentSession = {
+    ...codex,
+    ownership: "external",
+    completionEvidence: "authoritative",
+    name: "Source session"
+  };
+  let forkedCallback = "";
+  const managed: ManagedCodexExecutor = {
+    forkThread: async (session, turnId) => ({
+      ...session,
+      sessionId: "forked-session",
+      name: "Source session · 飞书",
+      ownership: "managed",
+      managedBackend: "codex-app-server",
+      forkedFromSessionId: session.sessionId,
+      forkedFromTurnId: turnId
+    }),
+    runTurn: async (session) => ({
+      exitCode: 0,
+      durationMs: 2,
+      outputTail: "forked result",
+      sessionId: session.sessionId,
+      turnId: "fork-turn",
+      backend: "codex-app-server"
+    })
+  };
+  const runner = new AgentReplyRunner(
+    10_000,
+    activeWriterSpawn(),
+    async () => "codex",
+    managed,
+    async (_job, session) => { forkedCallback = session.sessionId; }
+  );
+  const job: AgentReplyJob = {
+    id: "job-fork",
+    chatId: "chat",
+    inboundMessageId: "inbound",
+    session: { ...source },
+    originalSession: { ...source },
+    anchorTurnId: "source-turn",
+    prompt: "continue",
+    policy: "planOnly"
+  };
+  const result = await runner.run(job, new AbortController().signal);
+  assert.equal(result.sessionId, "forked-session");
+  assert.equal(result.turnId, "fork-turn");
+  assert.equal(job.session.sessionId, "forked-session");
+  assert.equal(forkedCallback, "forked-session");
+});
+
+function activeWriterSpawn(): typeof spawn {
+  return (() => {
+    const processEvents = new EventEmitter();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    stdin.once("finish", () => setImmediate(() => {
+      stderr.write("thread-store conflict: thread codex-session already has an active writer");
+      processEvents.emit("close", 1);
+    }));
+    return Object.assign(processEvents, {
+      stdin,
+      stdout,
+      stderr,
+      kill: () => true,
+      pid: 4321
+    }) as unknown as ChildProcessWithoutNullStreams;
+  }) as unknown as typeof spawn;
+}

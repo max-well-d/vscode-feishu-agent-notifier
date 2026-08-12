@@ -10,10 +10,16 @@ export interface AgentReplyResult {
   durationMs: number;
   outputTail: string;
   sessionId?: string;
+  turnId?: string;
   backend?: "codex-app-server" | "cli";
 }
 
 export interface ManagedCodexExecutor {
+  forkThread(
+    source: AgentSession,
+    sourceTurnId: string,
+    policy: RemoteExecutionPolicy
+  ): Promise<AgentSession>;
   runTurn(
     session: AgentSession,
     prompt: string,
@@ -28,6 +34,8 @@ export interface AgentReplyJob {
   chatId: string;
   inboundMessageId: string;
   session: AgentSession;
+  originalSession: AgentSession;
+  anchorTurnId?: string;
   prompt: string;
   policy: RemoteExecutionPolicy;
 }
@@ -56,7 +64,8 @@ export class AgentReplyRunner {
     private readonly timeoutMs = 30 * 60 * 1000,
     private readonly spawnImpl: typeof spawn = spawn,
     private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>,
-    private readonly managedCodex?: ManagedCodexExecutor
+    private readonly managedCodex?: ManagedCodexExecutor,
+    private readonly onCodexForked?: (job: AgentReplyJob, session: AgentSession) => Promise<void>
   ) {}
 
   public async run(job: AgentReplyJob, signal: AbortSignal): Promise<AgentReplyResult> {
@@ -79,7 +88,11 @@ export class AgentReplyRunner {
       if (!this.managedCodex) {
         throw new Error("Codex App Server 托管执行器未初始化");
       }
-      return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+      try {
+        return await this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+      } catch (error) {
+        return this.runForkFallback(job, normalizeError(error), signal);
+      }
     }
     const allowNonGitWorkspace = job.session.source === "codex"
       && job.session.ownership === "external"
@@ -92,16 +105,45 @@ export class AgentReplyRunner {
       const displayName = job.session.source === "codex" ? "Codex" : "Claude Code";
       throw new Error(`未找到 ${displayName} CLI；请在扩展设置中指定可执行文件路径`);
     }
-    return runChildProcess(
-      this.spawnImpl,
-      resolvedExecutable ?? command.executable,
-      command.args,
-      job.session.cwd,
-      job.prompt,
-      signal,
-      this.timeoutMs,
-      job.session.source
-    );
+    try {
+      return await runChildProcess(
+        this.spawnImpl,
+        resolvedExecutable ?? command.executable,
+        command.args,
+        job.session.cwd,
+        job.prompt,
+        signal,
+        this.timeoutMs,
+        job.session.source
+      );
+    } catch (error) {
+      return this.runForkFallback(job, normalizeError(error), signal);
+    }
+  }
+
+  private async runForkFallback(
+    job: AgentReplyJob,
+    error: Error,
+    signal: AbortSignal
+  ): Promise<AgentReplyResult> {
+    if (job.session.source !== "codex" || !isCodexActiveWriterConflict(error)) {
+      throw error;
+    }
+    if (!this.managedCodex) {
+      throw new Error(`原 Codex 会话正被本机占用，且托管执行器不可用：${error.message}`);
+    }
+    if (!job.anchorTurnId) {
+      throw new Error("原 Codex 会话正被本机占用；当前消息没有精确 turnId，无法安全创建远程分支。请引用 v0.14.0 之后的“已完成”卡片。");
+    }
+    let forked: AgentSession;
+    try {
+      forked = await this.managedCodex.forkThread(job.originalSession, job.anchorTurnId, job.policy);
+      await this.onCodexForked?.(job, forked);
+    } catch (forkError) {
+      throw new Error(`原 Codex 会话正被本机占用，创建持久化远程分支失败：${normalizeError(forkError).message}`);
+    }
+    Object.assign(job.session, forked);
+    return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
   }
 }
 
@@ -116,11 +158,15 @@ export class AgentReplyQueue {
     private readonly maximumPending = 20
   ) {}
 
-  public enqueue(input: Omit<AgentReplyJob, "id">): EnqueueResult {
+  public enqueue(input: Omit<AgentReplyJob, "id" | "originalSession">): EnqueueResult {
     if (this.pending.length >= this.maximumPending) {
       throw new Error(`远程回复队列已满（最多 ${this.maximumPending} 条）`);
     }
-    const job: AgentReplyJob = { ...input, id: crypto.randomUUID() };
+    const job: AgentReplyJob = {
+      ...input,
+      id: crypto.randomUUID(),
+      originalSession: { ...input.session }
+    };
     let resolve!: (result: AgentReplyResult) => void;
     let reject!: (error: Error) => void;
     const completion = new Promise<AgentReplyResult>((resolvePromise, rejectPromise) => {
@@ -337,6 +383,7 @@ function runChildProcess(
         durationMs: Date.now() - startedAt,
         outputTail: compactOutput(output),
         sessionId: source === "claude-code" ? extractClaudeSessionId(output) : undefined,
+        turnId: source === "codex" ? extractCodexTurnId(output) : undefined,
         backend: "cli"
       };
       if (result.exitCode === 0) {
@@ -366,6 +413,38 @@ export function extractClaudeSessionId(output: string): string | undefined {
     }
   }
   return sessionId;
+}
+
+export function extractCodexTurnId(output: string): string | undefined {
+  let turnId: string | undefined;
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.trim().startsWith("{")) {
+      continue;
+    }
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      const turn = typeof value.turn === "object" && value.turn !== null
+        ? value.turn as Record<string, unknown>
+        : undefined;
+      const candidate = value.turn_id ?? value.turnId ?? turn?.id;
+      if (typeof candidate === "string" && candidate.trim()) {
+        turnId = candidate.trim();
+      }
+    } catch {
+      // Ignore non-JSON diagnostics emitted alongside JSONL.
+    }
+  }
+  return turnId;
+}
+
+export function isCodexActiveWriterConflict(error: Error | string): boolean {
+  const message = typeof error === "string" ? error : error.message;
+  return /thread-store conflict/i.test(message)
+    && /already has an active writer/i.test(message);
+}
+
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function compactOutput(value: string): string {

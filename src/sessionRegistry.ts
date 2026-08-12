@@ -7,6 +7,14 @@ interface MessageRoute {
   createdAt: string;
   kind?: "agent-event" | "bot-reply";
   eventStatus?: AgentSession["status"];
+  turnId?: string;
+}
+
+interface RemoteBranch {
+  sourceSessionKey: string;
+  sourceTurnId: string;
+  managedSessionKey: string;
+  createdAt: string;
 }
 
 interface ChatSelection {
@@ -15,17 +23,19 @@ interface ChatSelection {
 }
 
 interface RegistryDocument {
-  version: 2;
+  version: 3;
   sessions: Record<string, AgentSession>;
   messages: Record<string, MessageRoute>;
+  remoteBranches: Record<string, RemoteBranch>;
   chatSelections: Record<string, ChatSelection>;
   processedInbound: Record<string, string>;
 }
 
 const EMPTY_DOCUMENT: RegistryDocument = {
-  version: 2,
+  version: 3,
   sessions: {},
   messages: {},
+  remoteBranches: {},
   chatSelections: {},
   processedInbound: {}
 };
@@ -65,10 +75,14 @@ export class SessionRegistry {
         project: event.project || previous?.project || path.basename(event.cwd) || "unknown",
         lastSeenAt: event.occurredAt || this.now().toISOString(),
         status: event.status,
+        name: event.sessionName || previous?.name,
         alias: previous?.alias,
         ownership: previous?.ownership ?? "external",
         completionEvidence: "authoritative",
-        managedBackend: previous?.managedBackend
+        managedBackend: previous?.managedBackend,
+        lastCompletedTurnId: terminalTurnId(event) || previous?.lastCompletedTurnId,
+        forkedFromSessionId: previous?.forkedFromSessionId,
+        forkedFromTurnId: previous?.forkedFromTurnId
       };
       document.sessions[key] = session;
       return session;
@@ -106,9 +120,13 @@ export class SessionRegistry {
               ? previous.status === "progress" || newerExternalActivity ? "progress" : previous.status
               : session.status,
             alias: previous.alias ?? session.alias,
+            name: previous.name ?? session.name,
             ownership: previous.ownership ?? session.ownership ?? "external",
             completionEvidence: previous.completionEvidence ?? session.completionEvidence ?? "discovered",
-            managedBackend: previous.managedBackend ?? session.managedBackend
+            managedBackend: previous.managedBackend ?? session.managedBackend,
+            lastCompletedTurnId: previous.lastCompletedTurnId ?? session.lastCompletedTurnId,
+            forkedFromSessionId: previous.forkedFromSessionId ?? session.forkedFromSessionId,
+            forkedFromTurnId: previous.forkedFromTurnId ?? session.forkedFromTurnId
           };
           changed += 1;
         }
@@ -128,10 +146,14 @@ export class SessionRegistry {
         project: event.project || previous?.project || path.basename(event.cwd) || "unknown",
         lastSeenAt: event.occurredAt || this.now().toISOString(),
         status: event.status,
+        name: event.sessionName || previous?.name,
         alias: previous?.alias,
         ownership: previous?.ownership ?? "external",
         completionEvidence: "authoritative",
-        managedBackend: previous?.managedBackend
+        managedBackend: previous?.managedBackend,
+        lastCompletedTurnId: terminalTurnId(event) || previous?.lastCompletedTurnId,
+        forkedFromSessionId: previous?.forkedFromSessionId,
+        forkedFromTurnId: previous?.forkedFromTurnId
       };
       const createdAt = this.now().toISOString();
       for (const receipt of receipts) {
@@ -140,7 +162,8 @@ export class SessionRegistry {
             sessionKey: key,
             createdAt,
             kind: "agent-event",
-            eventStatus: event.status
+            eventStatus: event.status,
+            turnId: event.turnId || undefined
           };
         }
       }
@@ -148,19 +171,31 @@ export class SessionRegistry {
   }
 
   public resolveMessage(messageId: string | undefined): Promise<AgentSession | undefined> {
+    return this.resolveMessageContext(messageId).then((context) => context?.session);
+  }
+
+  public resolveMessageContext(messageId: string | undefined): Promise<ResolvedSessionContext | undefined> {
     return this.read((document) => {
       if (!messageId) {
         return undefined;
       }
       const route = document.messages[messageId];
-      const session = route ? document.sessions[route.sessionKey] : undefined;
+      const branch = route?.turnId
+        ? document.remoteBranches[remoteBranchKey(route.sessionKey, route.turnId)]
+        : undefined;
+      const resolvedKey = branch?.managedSessionKey ?? route?.sessionKey;
+      const session = resolvedKey ? document.sessions[resolvedKey] : undefined;
       if (!session) {
         return undefined;
       }
-      return route.kind === "agent-event"
+      const resolved: AgentSession = route.kind === "agent-event"
         && (route.eventStatus === "completed" || route.eventStatus === "failed")
         ? { ...session, completionEvidence: "authoritative" }
         : session;
+      return {
+        session: resolved,
+        turnId: branch ? resolved.lastCompletedTurnId || route.turnId : route.turnId
+      };
     });
   }
 
@@ -178,22 +213,61 @@ export class SessionRegistry {
     });
   }
 
-  public recordMessageRoute(messageId: string, session: AgentSession): Promise<void> {
+  public recordMessageRoute(messageId: string, session: AgentSession, turnId?: string): Promise<void> {
     return this.mutate((document) => {
       const key = agentSessionKey(session.source, session.sessionId);
       document.sessions[key] = document.sessions[key] ?? session;
       document.messages[messageId] = {
         sessionKey: key,
         createdAt: this.now().toISOString(),
-        kind: "bot-reply"
+        kind: "bot-reply",
+        turnId: turnId || undefined
       };
+    });
+  }
+
+  public recordRemoteBranch(
+    source: AgentSession,
+    sourceTurnId: string,
+    managed: AgentSession,
+    chatId: string
+  ): Promise<AgentSession> {
+    return this.mutate((document) => {
+      const sourceKey = agentSessionKey(source.source, source.sessionId);
+      const managedKey = agentSessionKey(managed.source, managed.sessionId);
+      const previousSource = document.sessions[sourceKey] ?? source;
+      document.sessions[sourceKey] = {
+        ...previousSource,
+        status: source.status,
+        completionEvidence: source.completionEvidence ?? "authoritative"
+      };
+      const persisted: AgentSession = {
+        ...managed,
+        ownership: "managed",
+        completionEvidence: "authoritative",
+        forkedFromSessionId: source.sessionId,
+        forkedFromTurnId: sourceTurnId
+      };
+      document.sessions[managedKey] = persisted;
+      document.remoteBranches[remoteBranchKey(sourceKey, sourceTurnId)] = {
+        sourceSessionKey: sourceKey,
+        sourceTurnId,
+        managedSessionKey: managedKey,
+        createdAt: this.now().toISOString()
+      };
+      document.chatSelections[chatId] = {
+        sessionKey: managedKey,
+        updatedAt: this.now().toISOString()
+      };
+      return persisted;
     });
   }
 
   public updateExecutionState(
     original: AgentSession,
     status: AgentSession["status"],
-    actualSessionId?: string
+    actualSessionId?: string,
+    actualTurnId?: string
   ): Promise<AgentSession> {
     return this.mutate((document) => {
       const oldKey = agentSessionKey(original.source, original.sessionId);
@@ -205,7 +279,8 @@ export class SessionRegistry {
         status,
         ownership: previous.ownership ?? original.ownership ?? "external",
         completionEvidence: "authoritative",
-        managedBackend: previous.managedBackend ?? original.managedBackend
+        managedBackend: previous.managedBackend ?? original.managedBackend,
+        lastCompletedTurnId: actualTurnId || previous.lastCompletedTurnId
       };
       const newKey = agentSessionKey(updated.source, updated.sessionId);
       document.sessions[newKey] = updated;
@@ -315,9 +390,10 @@ export class SessionRegistry {
     try {
       const parsed = JSON.parse(await fs.readFile(this.filePath, "utf8")) as Partial<RegistryDocument>;
       const document: RegistryDocument = {
-        version: 2,
+        version: 3,
         sessions: isRecord(parsed.sessions) ? parsed.sessions as Record<string, AgentSession> : {},
         messages: isRecord(parsed.messages) ? parsed.messages as Record<string, MessageRoute> : {},
+        remoteBranches: isRecord(parsed.remoteBranches) ? parsed.remoteBranches as Record<string, RemoteBranch> : {},
         chatSelections: isRecord(parsed.chatSelections) ? parsed.chatSelections as Record<string, ChatSelection> : {},
         processedInbound: isRecord(parsed.processedInbound) ? parsed.processedInbound as Record<string, string> : {}
       };
@@ -365,6 +441,11 @@ export class SessionRegistry {
         delete document.chatSelections[chatId];
       }
     }
+    for (const [key, branch] of Object.entries(document.remoteBranches)) {
+      if (!document.sessions[branch.sourceSessionKey] || !document.sessions[branch.managedSessionKey]) {
+        delete document.remoteBranches[key];
+      }
+    }
   }
 }
 
@@ -408,6 +489,21 @@ function migrateLegacyEvidence(document: RegistryDocument): void {
 
 export function agentSessionKey(source: AgentSession["source"], sessionId: string): string {
   return `${source}:${sessionId}`;
+}
+
+export interface ResolvedSessionContext {
+  session: AgentSession;
+  turnId?: string;
+}
+
+function remoteBranchKey(sourceSessionKey: string, sourceTurnId: string): string {
+  return `${sourceSessionKey}::${sourceTurnId}`;
+}
+
+function terminalTurnId(event: AgentEvent): string | undefined {
+  return event.turnId && (event.status === "completed" || event.status === "failed")
+    ? event.turnId
+    : undefined;
 }
 
 function normalizeAlias(value: string): string {

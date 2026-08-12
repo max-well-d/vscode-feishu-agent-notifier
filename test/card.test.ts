@@ -11,6 +11,7 @@ const event: AgentEvent = {
   turnId: "turn",
   cwd: "C:\\work\\project",
   project: "project",
+  sessionName: "修复飞书远程控制",
   message: "done",
   occurredAt: "2026-08-12T03:00:00.000Z"
 };
@@ -21,6 +22,8 @@ test("builds a visual card header and Markdown body", () => {
   assert.equal(card.header.template, "green");
   assert.match(card.header.title.content, /Codex/);
   assert.match(card.header.subtitle.content, /project/);
+  assert.match(card.header.subtitle.content, /修复飞书远程控制/);
+  assert.match(card.header.subtitle.content, /session/);
   assert.equal(card.body.elements[0].tag, "markdown");
   assert.equal(card.body.elements[0].content, "## 结果\n\n**完成**");
 });

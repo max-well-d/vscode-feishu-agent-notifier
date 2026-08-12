@@ -31,6 +31,13 @@ export interface CodexAppServerOptions {
   onState?: (state: AppServerState, detail?: string) => void;
 }
 
+export interface CodexThreadMetadata {
+  id: string;
+  name?: string;
+  preview?: string;
+  forkedFromId?: string;
+}
+
 /**
  * A single-owner stdio client for Codex App Server. It intentionally does not
  * expose a network listener: Feishu and VS Code submit work through this one
@@ -47,6 +54,7 @@ export class CodexAppServerClient {
   private readonly turnMessages = new Map<string, string>();
   private readonly activeTurns = new Map<string, string>();
   private readonly loadedThreads = new Set<string>();
+  private readonly metadataCache = new Map<string, { value: CodexThreadMetadata; cachedAt: number }>();
   private disposed = false;
   private _state: AppServerState = "stopped";
   private _lastError: string | undefined;
@@ -68,7 +76,8 @@ export class CodexAppServerClient {
   public async startThread(
     cwd: string,
     project: string,
-    policy: RemoteExecutionPolicy
+    policy: RemoteExecutionPolicy,
+    name?: string
   ): Promise<AgentSession> {
     await this.ensureStarted();
     const result = await this.request("thread/start", {
@@ -82,7 +91,15 @@ export class CodexAppServerClient {
     if (!threadId) {
       throw new Error("Codex App Server 未返回 thread.id");
     }
+    const persistedName = cleanThreadName(name) || stringValue(thread?.name) || undefined;
+    if (persistedName && persistedName !== stringValue(thread?.name)) {
+      await this.request("thread/name/set", { threadId, name: persistedName });
+    }
     this.loadedThreads.add(threadId);
+    this.metadataCache.set(threadId, {
+      value: { id: threadId, name: persistedName, preview: stringValue(thread?.preview) || undefined },
+      cachedAt: Date.now()
+    });
     return {
       source: "codex",
       sessionId: threadId,
@@ -90,10 +107,92 @@ export class CodexAppServerClient {
       project,
       lastSeenAt: new Date().toISOString(),
       status: "completed",
+      name: persistedName,
       ownership: "managed",
       completionEvidence: "authoritative",
       managedBackend: "codex-app-server"
     };
+  }
+
+  public async forkThread(
+    source: AgentSession,
+    sourceTurnId: string,
+    policy: RemoteExecutionPolicy
+  ): Promise<AgentSession> {
+    await this.ensureStarted();
+    if (!sourceTurnId) {
+      throw new Error("缺少被引用完成消息的 turnId");
+    }
+    const metadata = await this.readThreadMetadata(source.sessionId).catch(() => undefined);
+    const result = await this.request("thread/fork", {
+      threadId: source.sessionId,
+      lastTurnId: sourceTurnId,
+      cwd: source.cwd,
+      approvalPolicy: "never",
+      ...(policy === "planOnly" ? { sandbox: "read-only" } : {}),
+      ephemeral: false,
+      excludeTurns: true,
+      deferGoalContinuation: true
+    });
+    const thread = objectValue(result.thread);
+    const threadId = stringValue(thread?.id);
+    if (!threadId) {
+      throw new Error("Codex App Server 未返回分支 thread.id");
+    }
+    const sourceName = source.alias || source.name || metadata?.name || stringValue(thread?.name) || source.project;
+    const name = remoteForkName(sourceName, threadId);
+    try {
+      await this.request("thread/name/set", { threadId, name });
+    } catch (error) {
+      this.options.log?.warn(`持久化 Codex 分支名称失败：${(error as Error).message}`);
+    }
+    this.loadedThreads.add(threadId);
+    this.metadataCache.set(threadId, {
+      value: {
+        id: threadId,
+        name,
+        preview: stringValue(thread?.preview) || metadata?.preview,
+        forkedFromId: source.sessionId
+      },
+      cachedAt: Date.now()
+    });
+    return {
+      source: "codex",
+      sessionId: threadId,
+      cwd: source.cwd,
+      project: source.project,
+      lastSeenAt: new Date().toISOString(),
+      status: "completed",
+      name,
+      ownership: "managed",
+      completionEvidence: "authoritative",
+      managedBackend: "codex-app-server",
+      lastCompletedTurnId: sourceTurnId,
+      forkedFromSessionId: source.sessionId,
+      forkedFromTurnId: sourceTurnId
+    };
+  }
+
+  public async readThreadMetadata(threadId: string): Promise<CodexThreadMetadata> {
+    const cached = this.metadataCache.get(threadId);
+    if (cached && Date.now() - cached.cachedAt < 30_000) {
+      return cached.value;
+    }
+    await this.ensureStarted();
+    const result = await this.request("thread/read", { threadId, includeTurns: false });
+    const thread = objectValue(result.thread);
+    const id = stringValue(thread?.id);
+    if (!id) {
+      throw new Error("Codex App Server 未返回 thread 元数据");
+    }
+    const value: CodexThreadMetadata = {
+      id,
+      name: stringValue(thread?.name) || undefined,
+      preview: stringValue(thread?.preview) || undefined,
+      forkedFromId: stringValue(thread?.forkedFromId) || undefined
+    };
+    this.metadataCache.set(id, { value, cachedAt: Date.now() });
+    return value;
   }
 
   public async runTurn(
@@ -156,6 +255,7 @@ export class CodexAppServerClient {
         durationMs: Date.now() - startedAt,
         outputTail: this.turnMessages.get(turnId) ?? "",
         sessionId: session.sessionId,
+        turnId,
         backend: "codex-app-server"
       };
     } finally {
@@ -201,6 +301,7 @@ export class CodexAppServerClient {
     this.process = undefined;
     this.rejectAll(new Error("Codex App Server 已停止"));
     this.loadedThreads.clear();
+    this.metadataCache.clear();
     this.setState("stopped");
   }
 
@@ -296,6 +397,10 @@ export class CodexAppServerClient {
           name: "feishu_agent_notifier",
           title: "Feishu Agent Notifier",
           version: this.options.version()
+        },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false
         }
       });
       this.notify("initialized", {});
@@ -454,6 +559,18 @@ export class CodexAppServerClient {
     this._lastError = state === "failed" ? detail : undefined;
     this.options.onState?.(state, detail);
   }
+}
+
+function cleanThreadName(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? Array.from(trimmed).slice(0, 80).join("") : undefined;
+}
+
+function remoteForkName(value: string, threadId: string): string {
+  const suffix = " · 飞书";
+  const fallback = `远程会话 ${threadId.slice(0, 8)}`;
+  const base = cleanThreadName(value) || fallback;
+  return `${Array.from(base).slice(0, Math.max(1, 80 - Array.from(suffix).length)).join("")}${suffix}`;
 }
 
 function objectValue(value: unknown): JsonObject | undefined {

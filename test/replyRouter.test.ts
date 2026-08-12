@@ -61,6 +61,7 @@ test("routes a quoted Feishu reply to the exact persisted Agent session", async 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(runner.jobs.length, 1);
   assert.equal(runner.jobs[0].session.sessionId, "session-router");
+  assert.equal(runner.jobs[0].anchorTurnId, "turn-router");
   assert.equal(runner.jobs[0].prompt, "continue");
   assert.match(replies[0], /已接收/);
 });

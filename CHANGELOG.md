@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0
+
+- Automatically fall back from an active-writer conflict to a persistent Codex App Server `thread/fork` anchored at the exact quoted completed turn.
+- Persist source-session plus source-turn to managed-branch bindings in registry v3, so reloads and repeated replies return to the same remote branch.
+- Preserve the original IDE session, keep the fork on disk, and route all later Feishu acknowledgements and completion cards to the managed branch without killing another Codex process.
+- Read the real Codex thread title through `thread/read`, persist it with the session, and show the title plus short session ID on Feishu cards and session listings.
+- Name `/new codex`, `/new cc`, and automatic Codex forks for immediate visual identification; automatic forks receive a visible `· 飞书` suffix.
+- Require an exact `turnId` before automatic forking; older cards without one fail safely instead of guessing a conversation snapshot.
+- Extend automated coverage to 91 unit/process tests and add a real active-writer persistent-fork protocol smoke test.
+
 ## 0.13.2
 
 - Resume an authoritative completed Codex session from its exact original non-Git working directory by using the public `--skip-git-repo-check` compatibility flag.

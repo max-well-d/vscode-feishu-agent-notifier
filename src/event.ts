@@ -89,6 +89,7 @@ export function formatEventMessage(event: AgentEvent, includeMetadata: boolean):
       : "✅ 已完成";
   const metadata = [
     `工具：${source}`,
+    `会话：${event.sessionName || event.project} (${event.sessionId.slice(0, 8) || "未知"})`,
     `项目：${event.project}`,
     `状态：${status}`,
     `时间：${new Date(event.occurredAt).toLocaleString("zh-CN", { hour12: false })}`
