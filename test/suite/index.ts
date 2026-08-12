@@ -15,6 +15,7 @@ export async function run(): Promise<void> {
     "feishuAgentNotifier.runDiagnostics",
     "feishuAgentNotifier.retryPending",
     "feishuAgentNotifier.clearPending",
+    "feishuAgentNotifier.configureRemoteControl",
     "feishuAgentNotifier.showRemoteSessions",
     "feishuAgentNotifier.cancelRemoteReplies"
   ]) {

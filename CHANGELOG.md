@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1
+
+- Add a guided visual remote-control setup wizard for execution policy, app notification target, user allowlist, group allowlist, and group mention protection.
+- Add explicit risk confirmation before enabling inherited local Agent permissions.
+- Expose the wizard from the Command Palette, status menu, and onboarding walkthrough so remote control no longer requires editing `settings.json`.
+
 ## 0.12.0
 
 - Add opt-in bidirectional Feishu application-bot support over the official WebSocket long connection, without requiring a public callback server.

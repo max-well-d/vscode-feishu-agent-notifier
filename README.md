@@ -44,7 +44,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.12.0.vsix
+code --install-extension .\feishu-agent-notifier-0.12.1.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -94,10 +94,12 @@ code --install-extension .\feishu-agent-notifier-0.12.0.vsix
 1. 在飞书开放平台为自建应用开启机器人能力。
 2. 开通“以应用身份发送消息”，以及所需的单聊消息或群聊 @机器人消息读取权限。不要为了方便申请读取群内全部消息。
 3. 在“事件与回调”中选择“使用长连接接收事件”，订阅 `im.message.receive_v1`，然后发布应用版本。
-4. 在扩展中安全保存 App ID / App Secret，并完成应用机器人 `Receive ID` 配置。
-5. 将自己的飞书 `open_id` 加入 `remoteAllowedUserOpenIds`。群聊使用时，还要把群 `chat_id` 加入 `remoteAllowedChatIds`。
-6. 将 `remoteExecutionPolicy` 改为 `planOnly`；确认风险后才考虑 `inherit`。
+4. 在扩展中运行“安全保存飞书凭据”，保存 App ID / App Secret。
+5. 运行“飞书 Agent 通知：配置远程操控”，通过可视化向导选择通知目标、填写用户 `open_id` 和可选群 `chat_id` 白名单。
+6. 在向导中先选择“只读规划”；确认风险后才考虑“继承本机权限”。
 7. 运行完整自检；右下角显示“飞书 · 双向”后即可使用。
+
+远程操控所需选项都可以通过命令面板或右下角状态菜单中的“配置飞书远程操控”完成，不需要手动编辑 `settings.json`。向导会自动切换到应用机器人模式；选择继承本机权限时必须再次确认风险。
 
 单聊可直接引用机器人通知并回复。群聊必须位于白名单中，默认还必须引用通知并 @机器人。可用命令：
 

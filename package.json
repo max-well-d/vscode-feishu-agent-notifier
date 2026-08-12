@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -49,6 +49,7 @@
     "onCommand:feishuAgentNotifier.storeSecrets",
     "onCommand:feishuAgentNotifier.clearSecrets",
     "onCommand:feishuAgentNotifier.openSettings",
+    "onCommand:feishuAgentNotifier.configureRemoteControl",
     "onCommand:feishuAgentNotifier.showStatus",
     "onCommand:feishuAgentNotifier.toggleWorkspacePause",
     "onCommand:feishuAgentNotifier.runDiagnostics",
@@ -87,6 +88,10 @@
       {
         "command": "feishuAgentNotifier.openSettings",
         "title": "飞书 Agent 通知：打开设置"
+      },
+      {
+        "command": "feishuAgentNotifier.configureRemoteControl",
+        "title": "飞书 Agent 通知：配置远程操控"
       },
       {
         "command": "feishuAgentNotifier.showStatus",
@@ -137,6 +142,14 @@
             "description": "运行[发送测试消息](command:feishuAgentNotifier.testNotification)，确认机器人权限和目标配置正确。",
             "completionEvents": [
               "onCommand:feishuAgentNotifier.testNotification"
+            ]
+          },
+          {
+            "id": "feishuAgentNotifier.remoteControl",
+            "title": "可视化配置远程操控",
+            "description": "可选：运行[远程操控配置向导](command:feishuAgentNotifier.configureRemoteControl)，设置安全模式、通知目标和用户/群聊白名单。",
+            "completionEvents": [
+              "onCommand:feishuAgentNotifier.configureRemoteControl"
             ]
           },
           {

@@ -38,6 +38,7 @@ import {
   ReceiveIdType,
   RemoteExecutionPolicy
 } from "./types";
+import { parseIdList, validateIdListInput, validateReceiveIdInput } from "./remoteConfiguration";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
 const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
@@ -72,6 +73,7 @@ let extensionStoragePath = "";
 let activeExtensionId = "local.feishu-agent-notifier";
 let activeDeliveries = 0;
 let statusRefreshId = 0;
+let configurationWizardSaving = false;
 let statusSnapshot: StatusSnapshot = {
   initializing: true,
   enabled: true,
@@ -111,6 +113,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.storeSecrets", () => storeSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.clearSecrets", () => clearSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.openSettings", openSettings),
+    vscode.commands.registerCommand("feishuAgentNotifier.configureRemoteControl", () => configureRemoteControl(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.showStatus", () => showStatus(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.toggleWorkspacePause", () => toggleWorkspacePause(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.runDiagnostics", () => runDiagnostics(context)),
@@ -119,7 +122,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.showRemoteSessions", () => showRemoteSessions(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.cancelRemoteReplies", () => cancelRemoteReplies()),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
-      if (!event.affectsConfiguration("feishuAgentNotifier")) {
+      if (configurationWizardSaving || !event.affectsConfiguration("feishuAgentNotifier")) {
         return;
       }
       await deployHelper(context);
@@ -1030,7 +1033,7 @@ function renderStatusBar(): void {
 }
 
 interface StatusActionItem extends vscode.QuickPickItem {
-  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "sessions" | "cancelRemote" | "settings" | "logs";
+  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "remoteConfig" | "sessions" | "cancelRemote" | "settings" | "logs";
 }
 
 async function showStatus(context: vscode.ExtensionContext): Promise<void> {
@@ -1049,6 +1052,7 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
     ...(statusSnapshot.pendingCount > 0
       ? [{ label: `$(sync) 重试 ${statusSnapshot.pendingCount} 条待处理通知`, action: "retry" as const }]
       : []),
+    { label: "$(remote) 配置飞书远程操控", description: "权限、目标和白名单向导", action: "remoteConfig" },
     { label: "$(list-tree) 查看本地 Agent 会话", action: "sessions" },
     ...((agentReplyQueue?.activeCount ?? 0) + (agentReplyQueue?.pendingCount ?? 0) > 0
       ? [{ label: "$(stop-circle) 取消远程回复任务", action: "cancelRemote" as const }]
@@ -1082,6 +1086,9 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       break;
     case "diagnostics":
       await runDiagnostics(context);
+      break;
+    case "remoteConfig":
+      await configureRemoteControl(context);
       break;
     case "sessions":
       await showRemoteSessions(context);
@@ -1323,6 +1330,192 @@ function escapeMarkdown(value: string): string {
 async function openSettings(): Promise<void> {
   await vscode.commands.executeCommand("workbench.action.openSettings", `@ext:${activeExtensionId}`);
 }
+
+interface RemotePolicyPick extends vscode.QuickPickItem {
+  policy: RemoteExecutionPolicy;
+}
+
+interface ReceiveTypePick extends vscode.QuickPickItem {
+  receiveIdType: ReceiveIdType;
+}
+
+async function configureRemoteControl(context: vscode.ExtensionContext): Promise<void> {
+  const configuration = vscode.workspace.getConfiguration("feishuAgentNotifier");
+  const currentPolicy = configuration.get<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
+  const policy = await vscode.window.showQuickPick<RemotePolicyPick>([
+    {
+      label: "$(lock) 只读规划（推荐）",
+      description: "Codex 使用只读沙箱；Claude Code 使用 Plan 模式",
+      detail: "可从飞书继续会话，但不允许 Agent 修改文件。",
+      policy: "planOnly",
+      picked: currentPolicy === "planOnly"
+    },
+    {
+      label: "$(circle-slash) 关闭远程操控",
+      description: "停止飞书入站长连接并拒绝所有远程指令",
+      policy: "disabled",
+      picked: currentPolicy === "disabled"
+    },
+    {
+      label: "$(warning) 继承本机权限",
+      description: "可能修改文件、执行命令并消耗 Agent 配额",
+      detail: "仅在完全信任白名单用户和目标群时启用。",
+      policy: "inherit",
+      picked: currentPolicy === "inherit"
+    }
+  ], {
+    title: "飞书远程操控 · 1/6 执行权限",
+    placeHolder: "建议先使用只读规划模式",
+    ignoreFocusOut: true
+  });
+  if (!policy) {
+    return;
+  }
+  if (policy.policy === "disabled") {
+    await saveRemoteControlSettings(context, { remoteExecutionPolicy: "disabled" });
+    await vscode.window.showInformationMessage("飞书远程操控已关闭；原白名单已保留，重新启用时可继续使用。 ");
+    return;
+  }
+
+  const currentReceiveType = configuration.get<ReceiveIdType>("receiveIdType", "chat_id");
+  const receiveType = await vscode.window.showQuickPick<ReceiveTypePick>([
+    { label: "$(organization) 群聊 Chat ID", description: "以 oc_ 开头；机器人必须已加入该群", receiveIdType: "chat_id", picked: currentReceiveType === "chat_id" },
+    { label: "$(account) 用户 Open ID", description: "以 ou_ 开头", receiveIdType: "open_id", picked: currentReceiveType === "open_id" },
+    { label: "$(person) 用户 ID", description: "企业内部 user_id", receiveIdType: "user_id", picked: currentReceiveType === "user_id" },
+    { label: "$(mail) 用户邮箱", description: "飞书企业成员邮箱", receiveIdType: "email", picked: currentReceiveType === "email" }
+  ], {
+    title: "飞书远程操控 · 2/6 通知发送目标",
+    placeHolder: "选择机器人主动发送 Agent 通知的目标类型",
+    ignoreFocusOut: true
+  });
+  if (!receiveType) {
+    return;
+  }
+  const receiveId = await vscode.window.showInputBox({
+    title: "飞书远程操控 · 3/6 通知目标 ID",
+    prompt: receiveType.receiveIdType === "chat_id"
+      ? "填写目标群 chat_id；请先确保当前应用机器人已经加入该群"
+      : "填写与上一步类型对应的飞书用户标识",
+    value: configuration.get<string>("receiveId", ""),
+    placeHolder: receiveType.receiveIdType === "chat_id" ? "oc_xxxxxxxxxxxxxxxx" : receiveType.receiveIdType === "open_id" ? "ou_xxxxxxxxxxxxxxxx" : "目标标识",
+    ignoreFocusOut: true,
+    validateInput: (value) => validateReceiveIdInput(value, receiveType.receiveIdType)
+  });
+  if (receiveId === undefined) {
+    return;
+  }
+
+  const allowedUsersInput = await vscode.window.showInputBox({
+    title: "飞书远程操控 · 4/6 用户白名单",
+    prompt: "只有这些飞书用户可以操控本机 Agent；多个 open_id 用逗号、空格或换行分隔",
+    value: normalizedStringArray(configuration.get<string[]>("remoteAllowedUserOpenIds", [])).join(", "),
+    placeHolder: "ou_xxxxxxxxxxxxxxxx",
+    ignoreFocusOut: true,
+    validateInput: (value) => validateIdListInput(value, "ou_", "用户 open_id", true)
+  });
+  if (allowedUsersInput === undefined) {
+    return;
+  }
+  const allowedUsers = parseIdList(allowedUsersInput);
+
+  const currentChats = normalizedStringArray(configuration.get<string[]>("remoteAllowedChatIds", []));
+  const groupMode = await vscode.window.showQuickPick([
+    {
+      label: "$(organization) 同时允许群聊操控",
+      description: "群聊还需要单独填写 chat_id 白名单",
+      enabled: true,
+      picked: currentChats.length > 0
+    },
+    {
+      label: "$(account) 只允许白名单用户单聊操控",
+      description: "不接受任何群聊指令",
+      enabled: false,
+      picked: currentChats.length === 0
+    }
+  ], {
+    title: "飞书远程操控 · 5/6 使用范围",
+    placeHolder: "选择是否允许群聊中的 @机器人 指令",
+    ignoreFocusOut: true
+  });
+  if (!groupMode) {
+    return;
+  }
+
+  let allowedChats: string[] = [];
+  let requireMention = true;
+  if (groupMode.enabled) {
+    const suggestedChats = currentChats.length > 0
+      ? currentChats
+      : receiveType.receiveIdType === "chat_id" ? [receiveId.trim()] : [];
+    const allowedChatsInput = await vscode.window.showInputBox({
+      title: "飞书远程操控 · 6/6 群聊白名单",
+      prompt: "只有这些群可以提交指令；多个 chat_id 用逗号、空格或换行分隔",
+      value: suggestedChats.join(", "),
+      placeHolder: "oc_xxxxxxxxxxxxxxxx",
+      ignoreFocusOut: true,
+      validateInput: (value) => validateIdListInput(value, "oc_", "群聊 chat_id", true)
+    });
+    if (allowedChatsInput === undefined) {
+      return;
+    }
+    allowedChats = parseIdList(allowedChatsInput);
+    const mentionChoice = await vscode.window.showQuickPick([
+      { label: "$(verified) 必须 @机器人（推荐）", description: "降低群内普通对话被误执行的风险", required: true },
+      { label: "$(warning) 不要求 @机器人", description: "白名单群里的文本事件可能被当作指令", required: false }
+    ], {
+      title: "飞书远程操控 · 群聊触发保护",
+      placeHolder: "建议始终要求 @机器人",
+      ignoreFocusOut: true
+    });
+    if (!mentionChoice) {
+      return;
+    }
+    requireMention = mentionChoice.required;
+  }
+
+  if (policy.policy === "inherit") {
+    const confirmation = await vscode.window.showWarningMessage(
+      "继承本机权限后，飞书白名单用户可以让 Codex/Claude Code 修改文件、执行命令并消耗配额。确定启用吗？",
+      { modal: true },
+      "我理解风险并启用"
+    );
+    if (confirmation !== "我理解风险并启用") {
+      return;
+    }
+  }
+
+  await saveRemoteControlSettings(context, {
+    deliveryMode: "app",
+    receiveIdType: receiveType.receiveIdType,
+    receiveId: receiveId.trim(),
+    remoteExecutionPolicy: policy.policy,
+    remoteAllowedUserOpenIds: allowedUsers,
+    remoteAllowedChatIds: allowedChats,
+    remoteRequireGroupMention: requireMention
+  });
+  const groupSummary = allowedChats.length > 0 ? `，群聊 ${allowedChats.length} 个` : "，仅单聊";
+  await vscode.window.showInformationMessage(
+    `远程操控配置已保存：${policy.policy === "planOnly" ? "只读规划" : "继承本机权限"}，用户 ${allowedUsers.length} 个${groupSummary}。`
+  );
+}
+
+async function saveRemoteControlSettings(
+  context: vscode.ExtensionContext,
+  values: Record<string, unknown>
+): Promise<void> {
+  const configuration = vscode.workspace.getConfiguration("feishuAgentNotifier");
+  configurationWizardSaving = true;
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+  } finally {
+    configurationWizardSaving = false;
+  }
+  await deployHelper(context);
+  await restartServer(context);
+}
+
 
 function validateWebhookInput(value: string): string | undefined {
   try {
