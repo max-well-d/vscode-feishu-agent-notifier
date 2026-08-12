@@ -46,7 +46,8 @@ async function main() {
   try {
     await postEvent(body, port, args.token || "");
   } catch (error) {
-    const queued = await queueOfflineEvent(event, error, args.spool);
+    const queued = args["queue-offline"] !== "false"
+      && await queueOfflineEvent(event, error, args.spool);
     if (queued) {
       console.error(`[feishu-agent-notifier] 本地接收器不可用，事件已加入待处理队列：${error.message}`);
     } else {

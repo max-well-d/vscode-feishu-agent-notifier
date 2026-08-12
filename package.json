@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send every Codex or Claude Code assistant message to Feishu in realtime, with completion and local notification modes.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -181,7 +181,7 @@
           "default": "realtime",
           "scope": "machine",
           "order": 3,
-          "description": "Agent 消息的投递时机。实时模式依赖本地 transcript 增量监听。"
+          "description": "Agent 消息的投递时机。Claude Code 优先使用官方 MessageDisplay Hook；Codex 使用本地 transcript 增量监听。"
         },
         "feishuAgentNotifier.receiveIdType": {
           "type": "string",

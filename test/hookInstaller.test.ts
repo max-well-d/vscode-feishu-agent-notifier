@@ -60,14 +60,19 @@ test("updates its own Codex notify idempotently without losing saved state", () 
   assert.equal(second.previousNotify, undefined);
 });
 
-test("merges Claude Stop and StopFailure hooks idempotently", () => {
+test("merges Claude completion and MessageDisplay hooks idempotently", () => {
   const document: Record<string, any> = { hooks: {} };
   mergeClaudeHooks(document, options);
   assert.equal(mergeClaudeHooks(document, options), false);
 
   assert.equal(document.hooks.Stop.length, 1);
   assert.equal(document.hooks.StopFailure.length, 1);
+  assert.equal(document.hooks.MessageDisplay.length, 1);
   assert.ok(document.hooks.Stop[0].hooks[0].args.includes(NOTIFIER_MARKER));
+  assert.deepEqual(
+    document.hooks.MessageDisplay[0].hooks[0].args.slice(-2),
+    ["--queue-offline", "false"]
+  );
 });
 
 test("removes only notifier hook groups", () => {
@@ -79,6 +84,7 @@ test("removes only notifier hook groups", () => {
   assert.equal(document.hooks.Stop.length, 1);
   assert.equal(document.hooks.Stop[0].hooks[0].command, "keep-me");
   assert.equal(document.hooks.StopFailure, undefined);
+  assert.equal(document.hooks.MessageDisplay, undefined);
 });
 
 test("installs inspectable hooks and restores unrelated Codex notify", async (t) => {
@@ -96,6 +102,7 @@ test("installs inspectable hooks and restores unrelated Codex notify", async (t)
   assert.equal(inspection.codexInstalled, true);
   assert.equal(inspection.claudeStopInstalled, true);
   assert.equal(inspection.claudeStopFailureInstalled, true);
+  assert.equal(inspection.claudeMessageDisplayInstalled, true);
 
   await uninstallHooks(home);
   const restored = await fs.readFile(path.join(home, ".codex", "config.toml"), "utf8");

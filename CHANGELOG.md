@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0
+
+- Prefer Claude Code's official `MessageDisplay` Hook for realtime assistant text.
+- Reassemble streamed display batches by message ID and index, emitting once when the message is final.
+- Keep Claude transcript watching only until the first valid display event, or as a compatibility fallback when `MessageDisplay` is unavailable.
+- Keep `Stop` and `StopFailure` as complete-message and failure fallbacks without duplicating realtime delivery.
+- Avoid persisting incomplete `MessageDisplay` fragments while VS Code is offline.
+- Add Hook installation, inspection, aggregation, ordering, and offline-behavior coverage.
+
 ## 0.7.0
 
 - Add realtime delivery for every persisted main-agent assistant text message, enabled by default.

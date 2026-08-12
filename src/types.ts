@@ -8,7 +8,7 @@ export interface AgentEvent {
   eventName: string;
   status: "progress" | "completed" | "failed";
   eventId?: string;
-  origin?: "transcript" | "hook";
+  origin?: "transcript" | "hook" | "display-hook";
   sessionId: string;
   turnId: string;
   cwd: string;

@@ -4,7 +4,7 @@
 
 Feishu Agent Notifier can transmit the complete final response produced by Codex or Claude Code. That response may contain source code, file paths, internal URLs, logs, tokens, or other sensitive information.
 
-In realtime mode, the extension incrementally reads local Codex and Claude Code transcript files and sends each newly persisted main-agent assistant text message. It excludes known thinking, tool, user, and Claude sidechain records, but assistant text itself may still contain sensitive information.
+In realtime mode, the extension reads local Codex transcripts and receives Claude Code assistant text through the official `MessageDisplay` Hook. Claude transcript watching remains active only until the first valid display event, or as a compatibility fallback when that Hook is unavailable. Known thinking, tool, user, and Claude sidechain records are excluded, but assistant text itself may still contain sensitive information.
 
 - Feishu credentials are stored in VS Code `SecretStorage`. Version 0.6.0 migrates legacy plaintext credential settings into `SecretStorage` and removes those settings from the public configuration UI.
 - The local receiver binds only to `127.0.0.1` and requires a random per-installation token.

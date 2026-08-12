@@ -24,6 +24,7 @@ export interface HookInspectionResult {
   codexInstalled: boolean;
   claudeStopInstalled: boolean;
   claudeStopFailureInstalled: boolean;
+  claudeMessageDisplayInstalled: boolean;
 }
 
 interface CodexNotifyMergeResult {
@@ -114,7 +115,8 @@ export async function inspectHooks(homeDirectory?: string): Promise<HookInspecti
     claudePath,
     codexInstalled: codexNotify?.text.includes(NOTIFIER_MARKER) ?? false,
     claudeStopInstalled: eventHasNotifier(hooks.Stop),
-    claudeStopFailureInstalled: eventHasNotifier(hooks.StopFailure)
+    claudeStopFailureInstalled: eventHasNotifier(hooks.StopFailure),
+    claudeMessageDisplayInstalled: eventHasNotifier(hooks.MessageDisplay)
   };
 }
 
@@ -166,20 +168,24 @@ export function removeCodexNotify(
 export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOptions): boolean {
   const before = JSON.stringify(document);
   const hooks = ensureHooks(document);
-  for (const eventName of ["Stop", "StopFailure"]) {
+  for (const eventName of ["Stop", "StopFailure", "MessageDisplay"]) {
     const groups = ensureEventGroups(hooks, eventName);
     removeMatchingGroups(groups);
+    const args = [
+      options.helperPath,
+      "--port", String(options.port),
+      "--token", options.token,
+      "--source", "claude-code",
+      "--notifier-id", NOTIFIER_MARKER
+    ];
+    if (eventName === "MessageDisplay") {
+      args.push("--queue-offline", "false");
+    }
     groups.push({
       hooks: [{
         type: "command",
         command: "node",
-        args: [
-          options.helperPath,
-          "--port", String(options.port),
-          "--token", options.token,
-          "--source", "claude-code",
-          "--notifier-id", NOTIFIER_MARKER
-        ],
+        args,
         async: true,
         timeout: 10
       }]

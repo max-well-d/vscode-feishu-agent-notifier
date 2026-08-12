@@ -7,6 +7,7 @@ import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
 import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
+import { HookEventNormalizer } from "./hookEventNormalizer";
 import {
   formatLocalNotification,
   LocalNotificationMode,
@@ -32,6 +33,7 @@ const SECRET_HOOK_TOKEN = "feishuAgentNotifier.hookToken";
 let hookServer: LocalHookServer | undefined;
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
+let claudeRealtimeSource: "message-display" | "transcript" | "probing" | undefined;
 let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.LogOutputChannel | undefined;
 let sendQueue: Promise<void> = Promise.resolve();
@@ -86,6 +88,7 @@ export async function deactivate(): Promise<void> {
   codexTranscriptWatcher = undefined;
   claudeTranscriptWatcher?.stop();
   claudeTranscriptWatcher = undefined;
+  claudeRealtimeSource = undefined;
   await hookServer?.stop();
   hookServer = undefined;
 }
@@ -95,6 +98,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   codexTranscriptWatcher = undefined;
   claudeTranscriptWatcher?.stop();
   claudeTranscriptWatcher = undefined;
+  claudeRealtimeSource = undefined;
   await hookServer?.stop();
   hookServer = undefined;
   if (!getSetting<boolean>("enabled", true)) {
@@ -107,9 +111,20 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   const deliveryTiming = getSetting<DeliveryTiming>("deliveryTiming", "realtime");
   const port = integrationTest ? 0 : getSetting<number>("port", 37561);
   const sender = new FeishuSender();
+  let messageDisplayObserved = false;
+  const hookEventNormalizer = new HookEventNormalizer(deliveryTiming, 150, () => {
+    if (messageDisplayObserved) {
+      return;
+    }
+    messageDisplayObserved = true;
+    claudeTranscriptWatcher?.stop();
+    claudeTranscriptWatcher = undefined;
+    claudeRealtimeSource = "message-display";
+    output?.info("已收到 Claude Code MessageDisplay；transcript 兼容监听已关闭。");
+  });
   hookServer = new LocalHookServer(token, async (event) => {
     enqueueEvent(context, sender, event);
-  });
+  }, (input) => hookEventNormalizer.normalize(input));
 
   try {
     await hookServer.start(port);
@@ -128,6 +143,12 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
       output?.info(`Codex transcript ${deliveryTiming === "realtime" ? "实时消息" : "完成事件"}监听已启动。`);
     }
     if (!integrationTest && deliveryTiming === "realtime") {
+      let messageDisplayInstalled = false;
+      try {
+        messageDisplayInstalled = (await inspectHooks()).claudeMessageDisplayInstalled;
+      } catch (error) {
+        output?.warn(`无法检查 Claude Code MessageDisplay Hook：${(error as Error).message}`);
+      }
       claudeTranscriptWatcher = new ClaudeTranscriptWatcher(
         async (event) => enqueueEvent(context, sender, event),
         vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
@@ -135,7 +156,17 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
         (error) => output?.warn(`Claude Code transcript 监听失败：${error.message}`)
       );
       await claudeTranscriptWatcher.start();
-      output?.info("Claude Code transcript 实时消息监听已启动。");
+      if (messageDisplayObserved) {
+        claudeTranscriptWatcher.stop();
+        claudeTranscriptWatcher = undefined;
+        claudeRealtimeSource = "message-display";
+      } else if (messageDisplayInstalled) {
+        claudeRealtimeSource = "probing";
+        output?.info("Claude Code MessageDisplay 已配置；transcript 兼容监听将在首次 Hook 事件后关闭。");
+      } else {
+        claudeRealtimeSource = "transcript";
+        output?.warn("Claude Code MessageDisplay Hook 未安装，暂用 transcript 兼容监听；请运行安装/修复 Hooks。");
+      }
     }
   } catch (error) {
     hookServer = undefined;
@@ -262,6 +293,7 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
     const helperPath = helperDestination(context);
     const port = getSetting<number>("port", 37561);
     const result = await installHooks({ helperPath, port, token });
+    await restartServer(context);
     output?.info(`Codex notify: ${result.codexPath}`);
     output?.info(`Claude hooks: ${result.claudePath}`);
     const detail = [
@@ -269,7 +301,7 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
       result.claudeChanged ? "Claude Code 已更新" : "Claude Code 无变化"
     ].join("；");
     await vscode.window.showInformationMessage(
-      `通知接入安装完成：${detail}。Codex 使用 notify，无需 /hooks 审核。`
+      `通知接入安装完成：${detail}。Claude Code 实时消息使用 MessageDisplay；Codex 使用 notify，无需 /hooks 审核。`
     );
   } catch (error) {
     await showOperationError("安装 Hooks 失败", error);
@@ -585,7 +617,12 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
       : "仅任务结束"));
   if (getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime") {
     checks.push(checkLine("Codex 实时监听", Boolean(codexTranscriptWatcher), "~/.codex/sessions"));
-    checks.push(checkLine("Claude Code 实时监听", Boolean(claudeTranscriptWatcher), "~/.claude/projects"));
+    checks.push(checkLine("Claude Code 实时监听", Boolean(claudeRealtimeSource),
+      claudeRealtimeSource === "message-display"
+        ? "官方 MessageDisplay Hook"
+        : claudeRealtimeSource === "probing"
+          ? "MessageDisplay 等待首个事件，transcript 兼容待命"
+          : "transcript 兼容层"));
   }
   checks.push(checkLine("本地接收器", Boolean(hookServer?.port), hookServer?.port
     ? `127.0.0.1:${hookServer.port}`
@@ -603,6 +640,7 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
     checks.push(checkLine("Codex CLI notify", hooks.codexInstalled, hooks.codexPath));
     checks.push(checkLine("Claude Code Stop", hooks.claudeStopInstalled, hooks.claudePath));
     checks.push(checkLine("Claude Code StopFailure", hooks.claudeStopFailureInstalled, hooks.claudePath));
+    checks.push(checkLine("Claude Code MessageDisplay", hooks.claudeMessageDisplayInstalled, hooks.claudePath));
   } catch (error) {
     checks.push(checkLine("Hook 配置解析", false, (error as Error).message));
   }

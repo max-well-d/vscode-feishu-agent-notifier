@@ -3,6 +3,7 @@ import { normalizeAgentEvent } from "./event";
 import { AgentEvent } from "./types";
 
 export type EventHandler = (event: AgentEvent) => Promise<void>;
+export type EventNormalizer = (input: Record<string, unknown>) => AgentEvent | undefined | Promise<AgentEvent | undefined>;
 
 export class LocalHookServer {
   private server: http.Server | undefined;
@@ -10,7 +11,8 @@ export class LocalHookServer {
 
   public constructor(
     private readonly token: string,
-    private readonly onEvent: EventHandler
+    private readonly onEvent: EventHandler,
+    private readonly normalizeEvent: EventNormalizer = normalizeAgentEvent
   ) {}
 
   public get port(): number | undefined {
@@ -72,10 +74,12 @@ export class LocalHookServer {
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("事件必须是 JSON 对象");
       }
-      const event = normalizeAgentEvent(parsed as Record<string, unknown>);
+      const event = await this.normalizeEvent(parsed as Record<string, unknown>);
       response.writeHead(202, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ accepted: true }));
-      void this.onEvent(event);
+      if (event) {
+        void this.onEvent(event);
+      }
     } catch (error) {
       response.writeHead(400, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: (error as Error).message }));

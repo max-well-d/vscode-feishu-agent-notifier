@@ -111,3 +111,30 @@ test("helper queues the complete event while VS Code is offline", async (t) => {
   assert.equal(queued.event["last-assistant-message"], "离线时也不能丢失的完整回复");
   assert.ok(queued.queuedAt);
 });
+
+test("helper does not queue MessageDisplay fragments while VS Code is offline", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-helper-display-test-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const spool = path.join(root, "pending-events");
+  const helper = path.resolve(__dirname, "../../scripts/agent-hook.cjs");
+  const child = spawn(process.execPath, [
+    helper,
+    "--port", "1",
+    "--token", "test-token",
+    "--source", "claude-code",
+    "--spool", spool,
+    "--queue-offline", "false"
+  ]);
+  child.stdin.end(JSON.stringify({
+    hook_event_name: "MessageDisplay",
+    session_id: "session-1",
+    message_id: "message-1",
+    index: 0,
+    final: false,
+    delta: "过程分片"
+  }));
+  const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+
+  assert.equal(exitCode, 0);
+  await assert.rejects(fs.access(spool), { code: "ENOENT" });
+});

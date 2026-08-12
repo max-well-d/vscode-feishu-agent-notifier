@@ -52,9 +52,12 @@ test("extracts project names across Windows and POSIX path formats", () => {
   assert.equal(projectNameFromCwd(""), "unknown-project");
 });
 
-test("deduplicates matching bodies only across transcript and hook origins", () => {
+test("deduplicates matching bodies only across different capture origins", () => {
   assert.equal(isCrossOriginDuplicate("transcript", "hook"), true);
   assert.equal(isCrossOriginDuplicate("hook", "transcript"), true);
+  assert.equal(isCrossOriginDuplicate("display-hook", "hook"), true);
+  assert.equal(isCrossOriginDuplicate("display-hook", "transcript"), true);
   assert.equal(isCrossOriginDuplicate("transcript", "transcript"), false);
   assert.equal(isCrossOriginDuplicate("hook", "hook"), false);
+  assert.equal(isCrossOriginDuplicate("display-hook", "display-hook"), false);
 });
