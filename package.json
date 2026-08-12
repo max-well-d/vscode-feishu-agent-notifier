@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send the complete final Codex or Claude Code response to Feishu when a turn ends.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -154,11 +154,26 @@
           "order": 30,
           "description": "VS Code 本地通知接收器端口，仅监听 127.0.0.1。修改后需要重新安装通知接入。"
         },
+        "feishuAgentNotifier.messageFormat": {
+          "type": "string",
+          "enum": [
+            "card",
+            "text"
+          ],
+          "enumDescriptions": [
+            "飞书消息卡片：渲染 Markdown，并把 Markdown 表格转换为卡片原生表格。",
+            "兼容模式：按原始纯文本发送，不渲染 Markdown。"
+          ],
+          "default": "card",
+          "scope": "machine",
+          "order": 31,
+          "description": "飞书通知的展示格式。"
+        },
         "feishuAgentNotifier.includeMetadata": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "order": 31,
+          "order": 32,
           "description": "在完整回复之前附加 Agent、项目、状态和时间。"
         },
         "feishuAgentNotifier.maxChunkCharacters": {
@@ -167,21 +182,21 @@
           "minimum": 1000,
           "maximum": 20000,
           "scope": "machine",
-          "order": 32,
+          "order": 33,
           "description": "每条飞书文本消息的最大字符数。更长的最终回复会自动分片，内容不会截断。"
         },
         "feishuAgentNotifier.notifyOnFailure": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "order": 33,
+          "order": 34,
           "description": "Claude Code StopFailure 等失败事件也发送通知。"
         },
         "feishuAgentNotifier.watchCodexIde": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "order": 34,
+          "order": 35,
           "description": "监听本机 Codex IDE transcript 的 task_complete 事件，以覆盖当前 app-server 不调用 notify 的情况。"
         }
       }

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { AgentEvent, NotifierConfig } from "./types";
 import { addChunkLabels, formatEventMessage, splitMessage } from "./event";
+import { buildFeishuCard, FeishuCard } from "./card";
 
 interface TokenCacheEntry {
   token: string;
@@ -30,14 +31,25 @@ export class FeishuSender {
     }
 
     validateConfig(config);
-    const message = formatEventMessage(event, config.includeMetadata);
-    const chunks = addChunkLabels(splitMessage(message, config.maxChunkCharacters));
+    const textMode = config.messageFormat === "text";
+    const message = textMode
+      ? formatEventMessage(event, config.includeMetadata)
+      : event.message;
+    const plainChunks = splitMessage(message, config.maxChunkCharacters);
+    const chunks = textMode ? addChunkLabels(plainChunks) : plainChunks;
 
-    for (const chunk of chunks) {
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const card = textMode
+        ? undefined
+        : buildFeishuCard(event, chunk, config.includeMetadata, {
+          index: index + 1,
+          total: chunks.length
+        });
       if (config.deliveryMode === "webhook") {
-        await this.sendWebhookText(chunk, config.webhookUrl, config.webhookSecret);
+        await this.sendWebhook(chunk, card, config.webhookUrl, config.webhookSecret);
       } else {
-        await this.sendAppText(chunk, config);
+        await this.sendApp(chunk, card, config);
       }
       if (chunks.length > 1) {
         await delay(250);
@@ -46,11 +58,15 @@ export class FeishuSender {
     return chunks.length;
   }
 
-  private async sendWebhookText(text: string, webhookUrl: string, secret: string): Promise<void> {
-    const payload: Record<string, unknown> = {
-      msg_type: "text",
-      content: { text }
-    };
+  private async sendWebhook(
+    text: string,
+    card: FeishuCard | undefined,
+    webhookUrl: string,
+    secret: string
+  ): Promise<void> {
+    const payload: Record<string, unknown> = card
+      ? { msg_type: "interactive", card }
+      : { msg_type: "text", content: { text } };
 
     if (secret) {
       const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -67,7 +83,7 @@ export class FeishuSender {
     await ensureFeishuSuccess(response);
   }
 
-  private async sendAppText(text: string, config: NotifierConfig): Promise<void> {
+  private async sendApp(text: string, card: FeishuCard | undefined, config: NotifierConfig): Promise<void> {
     const token = await this.getTenantAccessToken(config.appId, config.appSecret);
     const endpoint = new URL("https://open.feishu.cn/open-apis/im/v1/messages");
     endpoint.searchParams.set("receive_id_type", config.receiveIdType);
@@ -80,8 +96,8 @@ export class FeishuSender {
       },
       body: JSON.stringify({
         receive_id: config.receiveId,
-        msg_type: "text",
-        content: JSON.stringify({ text })
+        msg_type: card ? "interactive" : "text",
+        content: JSON.stringify(card ?? { text })
       }),
       signal: AbortSignal.timeout(15_000)
     });

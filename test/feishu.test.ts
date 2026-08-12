@@ -23,6 +23,7 @@ const webhookConfig: NotifierConfig = {
   appSecret: "",
   receiveIdType: "chat_id",
   receiveId: "",
+  messageFormat: "card",
   includeMetadata: false,
   maxChunkCharacters: 12000,
   notifyOnFailure: true
@@ -39,7 +40,7 @@ test("creates deterministic Feishu webhook signatures", () => {
   );
 });
 
-test("sends webhook text with the complete final response", async () => {
+test("sends a webhook card with rendered Markdown", async () => {
   const requests: Array<{ url: string; body: any }> = [];
   const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({
@@ -53,8 +54,9 @@ test("sends webhook text with the complete final response", async () => {
   const count = await sender.sendEvent(event, webhookConfig);
   assert.equal(count, 1);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].body.content.text, event.message);
-  assert.equal(requests[0].body.msg_type, "text");
+  assert.equal(requests[0].body.msg_type, "interactive");
+  assert.equal(requests[0].body.card.schema, "2.0");
+  assert.equal(requests[0].body.card.body.elements[0].content, event.message);
   assert.ok(requests[0].body.timestamp);
   assert.ok(requests[0].body.sign);
 });
@@ -91,7 +93,20 @@ test("app mode fetches a token and sends to the configured target", async () => 
   assert.equal(urls.length, 2);
   assert.match(urls[1], /receive_id_type=email/);
   assert.equal(bodies[1].receive_id, "developer@example.com");
-  assert.deepEqual(JSON.parse(bodies[1].content), { text: event.message });
+  assert.equal(bodies[1].msg_type, "interactive");
+  assert.equal(JSON.parse(bodies[1].content).schema, "2.0");
+});
+
+test("keeps a plain text compatibility mode", async () => {
+  const bodies: any[] = [];
+  const fakeFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), { status: 200 });
+  }) as typeof fetch;
+
+  await new FeishuSender(fakeFetch).sendEvent(event, { ...webhookConfig, messageFormat: "text" });
+  assert.equal(bodies[0].msg_type, "text");
+  assert.equal(bodies[0].content.text, event.message);
 });
 
 test("rejects non-Feishu webhook hosts", () => {

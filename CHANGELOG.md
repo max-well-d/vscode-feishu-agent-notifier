@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Send notifications as Feishu JSON 2.0 message cards by default.
+- Render headings, emphasis, lists, links, code blocks, and other standard Markdown.
+- Convert GitHub-style Markdown tables into native Feishu table components.
+- Show agent, status, project, time, and multipart progress in the card header.
+- Add a `messageFormat` setting with a plain-text compatibility mode.
+
 ## 0.3.0
 
 - Detect Codex IDE/app-server completion by watching newly appended local transcript `task_complete` events.

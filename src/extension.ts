@@ -7,7 +7,7 @@ import { eventDeduplicationKey } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { installHooks, uninstallHooks } from "./hookInstaller";
 import { LocalHookServer } from "./server";
-import { AgentEvent, DeliveryMode, NotifierConfig, ReceiveIdType } from "./types";
+import { AgentEvent, DeliveryMode, MessageFormat, NotifierConfig, ReceiveIdType } from "./types";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
 const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
@@ -262,6 +262,7 @@ async function loadNotifierConfig(context: vscode.ExtensionContext): Promise<Not
     appSecret: await secretOrSetting(context, SECRET_APP_SECRET, "appSecret"),
     receiveIdType: getSetting<ReceiveIdType>("receiveIdType", "chat_id"),
     receiveId: getSetting<string>("receiveId", "").trim(),
+    messageFormat: getSetting<MessageFormat>("messageFormat", "card"),
     includeMetadata: getSetting<boolean>("includeMetadata", true),
     maxChunkCharacters: getSetting<number>("maxChunkCharacters", 3000),
     notifyOnFailure: getSetting<boolean>("notifyOnFailure", true)

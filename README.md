@@ -9,6 +9,8 @@
 - 支持 Claude Code `Stop` 和 `StopFailure` Hooks。
 - Codex 从命令行参数接收 `agent-turn-complete` JSON；Claude Code 从 stdin 接收 Hook JSON。
 - 最终回复不截断；超过单条上限时按 Unicode 字符自动分片。
+- 默认使用飞书 JSON 2.0 消息卡片渲染 Markdown；Markdown 表格会转换为卡片原生表格。
+- 可通过 `messageFormat=text` 切换回纯文本兼容模式。
 - 支持两种飞书模式：
   - 群自定义机器人 Webhook：目标是 Webhook 所属群聊。
   - 飞书自建应用机器人：通过 `open_id`、`user_id`、`email` 或 `chat_id` 指定目标。
@@ -23,7 +25,7 @@ cd vscode-feishu-agent-notifier
 npm install
 npm test
 npm run package
-code --install-extension .\feishu-agent-notifier-0.3.0.vsix
+code --install-extension .\feishu-agent-notifier-0.4.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。

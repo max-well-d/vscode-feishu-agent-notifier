@@ -1,5 +1,6 @@
 export type DeliveryMode = "webhook" | "app";
 export type ReceiveIdType = "open_id" | "user_id" | "email" | "chat_id";
+export type MessageFormat = "card" | "text";
 
 export interface AgentEvent {
   source: "codex" | "claude-code" | "unknown";
@@ -21,6 +22,7 @@ export interface NotifierConfig {
   appSecret: string;
   receiveIdType: ReceiveIdType;
   receiveId: string;
+  messageFormat: MessageFormat;
   includeMetadata: boolean;
   maxChunkCharacters: number;
   notifyOnFailure: boolean;
