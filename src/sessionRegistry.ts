@@ -5,6 +5,8 @@ import { AgentEvent, AgentSession, FeishuDeliveryReceipt } from "./types";
 interface MessageRoute {
   sessionKey: string;
   createdAt: string;
+  kind?: "agent-event" | "bot-reply";
+  eventStatus?: AgentSession["status"];
 }
 
 interface ChatSelection {
@@ -13,7 +15,7 @@ interface ChatSelection {
 }
 
 interface RegistryDocument {
-  version: 1;
+  version: 2;
   sessions: Record<string, AgentSession>;
   messages: Record<string, MessageRoute>;
   chatSelections: Record<string, ChatSelection>;
@@ -21,7 +23,7 @@ interface RegistryDocument {
 }
 
 const EMPTY_DOCUMENT: RegistryDocument = {
-  version: 1,
+  version: 2,
   sessions: {},
   messages: {},
   chatSelections: {},
@@ -134,7 +136,12 @@ export class SessionRegistry {
       const createdAt = this.now().toISOString();
       for (const receipt of receipts) {
         if (receipt.messageId) {
-          document.messages[receipt.messageId] = { sessionKey: key, createdAt };
+          document.messages[receipt.messageId] = {
+            sessionKey: key,
+            createdAt,
+            kind: "agent-event",
+            eventStatus: event.status
+          };
         }
       }
     });
@@ -146,7 +153,14 @@ export class SessionRegistry {
         return undefined;
       }
       const route = document.messages[messageId];
-      return route ? document.sessions[route.sessionKey] : undefined;
+      const session = route ? document.sessions[route.sessionKey] : undefined;
+      if (!session) {
+        return undefined;
+      }
+      return route.kind === "agent-event"
+        && (route.eventStatus === "completed" || route.eventStatus === "failed")
+        ? { ...session, completionEvidence: "authoritative" }
+        : session;
     });
   }
 
@@ -168,7 +182,11 @@ export class SessionRegistry {
     return this.mutate((document) => {
       const key = agentSessionKey(session.source, session.sessionId);
       document.sessions[key] = document.sessions[key] ?? session;
-      document.messages[messageId] = { sessionKey: key, createdAt: this.now().toISOString() };
+      document.messages[messageId] = {
+        sessionKey: key,
+        createdAt: this.now().toISOString(),
+        kind: "bot-reply"
+      };
     });
   }
 
@@ -296,13 +314,15 @@ export class SessionRegistry {
   private async load(): Promise<RegistryDocument> {
     try {
       const parsed = JSON.parse(await fs.readFile(this.filePath, "utf8")) as Partial<RegistryDocument>;
-      return {
-        version: 1,
+      const document: RegistryDocument = {
+        version: 2,
         sessions: isRecord(parsed.sessions) ? parsed.sessions as Record<string, AgentSession> : {},
         messages: isRecord(parsed.messages) ? parsed.messages as Record<string, MessageRoute> : {},
         chatSelections: isRecord(parsed.chatSelections) ? parsed.chatSelections as Record<string, ChatSelection> : {},
         processedInbound: isRecord(parsed.processedInbound) ? parsed.processedInbound as Record<string, string> : {}
       };
+      migrateLegacyEvidence(document);
+      return document;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return structuredClone(EMPTY_DOCUMENT);
@@ -345,6 +365,44 @@ export class SessionRegistry {
         delete document.chatSelections[chatId];
       }
     }
+  }
+}
+
+/**
+ * Before registry v2, every persisted message route came from recordDelivery,
+ * so a terminal session with a route written at the same time as lastSeenAt is
+ * evidence of a real completed/failed Agent event. Disk-only discoveries have
+ * no such route. This keeps quoted completion cards usable after upgrading
+ * without treating an unrelated, stale progress card as completion evidence.
+ */
+function migrateLegacyEvidence(document: RegistryDocument): void {
+  const newestLegacyRouteBySession = new Map<string, number>();
+  for (const route of Object.values(document.messages)) {
+    if (route.kind || route.eventStatus) {
+      continue;
+    }
+    const createdAt = Date.parse(route.createdAt);
+    if (Number.isFinite(createdAt)) {
+      newestLegacyRouteBySession.set(
+        route.sessionKey,
+        Math.max(newestLegacyRouteBySession.get(route.sessionKey) ?? 0, createdAt)
+      );
+    }
+  }
+  for (const [key, session] of Object.entries(document.sessions)) {
+    session.ownership ??= "external";
+    if (session.completionEvidence === "authoritative") {
+      continue;
+    }
+    const routeTime = newestLegacyRouteBySession.get(key);
+    const lastSeenAt = Date.parse(session.lastSeenAt);
+    const terminal = session.status === "completed" || session.status === "failed";
+    session.completionEvidence = terminal
+      && routeTime !== undefined
+      && Number.isFinite(lastSeenAt)
+      && routeTime >= lastSeenAt - 5_000
+      ? "authoritative"
+      : "discovered";
   }
 }
 

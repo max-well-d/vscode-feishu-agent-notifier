@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1
+
+- Fix quoted completion cards created before the 0.13.0 reload being rejected as disk-only sessions after upgrade.
+- Upgrade the private session registry to v2 and persist route kind plus Agent event status for future exact-message safety checks.
+- Migrate legacy completion evidence only when a terminal session has a contemporaneous delivered-message route; stale progress routes remain blocked.
+- Extend automated coverage to 85 unit/process tests, including both safe legacy migration paths.
+
 ## 0.13.0
 
 - Add single-owner Codex managed sessions backed by the official stdio App Server protocol, with persistent `thread/start` / `thread/resume`, streamed completion events, and no per-message `codex exec resume` process.

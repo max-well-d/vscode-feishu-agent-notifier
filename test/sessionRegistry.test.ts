@@ -25,6 +25,17 @@ test("persists message routes, chat selection, aliases, and inbound deduplicatio
   await registry.recordDelivery(event, [{ messageId: "om_1", chatId: "oc_1", chunkIndex: 1 }]);
   const resolved = await registry.resolveMessage("om_1");
   assert.equal(resolved?.sessionId, "session-1");
+  const stored = JSON.parse(await fs.readFile(file, "utf8")) as {
+    version: number;
+    messages: Record<string, { kind?: string; eventStatus?: string }>;
+  };
+  assert.equal(stored.version, 2);
+  assert.deepEqual(stored.messages.om_1, {
+    sessionKey: "codex:session-1",
+    createdAt: "2026-08-13T01:00:00.000Z",
+    kind: "agent-event",
+    eventStatus: "completed"
+  });
   assert.equal(await registry.claimInbound("incoming-1"), true);
   assert.equal(await registry.claimInbound("incoming-1"), false);
   await registry.setAlias(resolved!, "leader");
@@ -104,4 +115,74 @@ test("migrates bot message routes when a managed CLI reveals its real session id
   await registry.updateExecutionState(provisional, "completed", "claude-real-session");
   assert.equal((await registry.resolveMessage("bot-start"))?.sessionId, "claude-real-session");
   assert.equal((await registry.selectedForChat("oc_chat"))?.sessionId, "claude-real-session");
+});
+
+test("migrates a pre-0.13 quoted completion route as authoritative evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-v1-"));
+  const file = path.join(root, "registry.json");
+  await fs.writeFile(file, JSON.stringify({
+    version: 1,
+    sessions: {
+      "codex:legacy-complete": {
+        source: "codex",
+        sessionId: "legacy-complete",
+        cwd: event.cwd,
+        project: event.project,
+        lastSeenAt: "2026-08-13T02:11:35.100Z",
+        status: "completed"
+      },
+      "codex:disk-only": {
+        source: "codex",
+        sessionId: "disk-only",
+        cwd: event.cwd,
+        project: event.project,
+        lastSeenAt: "2026-08-13T02:11:35.100Z",
+        status: "completed"
+      }
+    },
+    messages: {
+      "om_legacy_completion": {
+        sessionKey: "codex:legacy-complete",
+        createdAt: "2026-08-13T02:11:35.800Z"
+      }
+    },
+    chatSelections: {},
+    processedInbound: {}
+  }), "utf8");
+
+  const registry = new SessionRegistry(file);
+  assert.equal((await registry.resolveMessage("om_legacy_completion"))?.completionEvidence, "authoritative");
+  assert.equal((await registry.getSession("disk-only"))?.completionEvidence, "discovered");
+  await registry.cleanup();
+  const persisted = JSON.parse(await fs.readFile(file, "utf8")) as { version: number };
+  assert.equal(persisted.version, 2);
+});
+
+test("does not upgrade a stale legacy progress route into completion evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-v1-stale-"));
+  const file = path.join(root, "registry.json");
+  await fs.writeFile(file, JSON.stringify({
+    version: 1,
+    sessions: {
+      "codex:legacy-stale": {
+        source: "codex",
+        sessionId: "legacy-stale",
+        cwd: event.cwd,
+        project: event.project,
+        lastSeenAt: "2026-08-13T02:15:00.000Z",
+        status: "completed"
+      }
+    },
+    messages: {
+      "om_old_progress": {
+        sessionKey: "codex:legacy-stale",
+        createdAt: "2026-08-13T02:11:35.800Z"
+      }
+    },
+    chatSelections: {},
+    processedInbound: {}
+  }), "utf8");
+
+  const registry = new SessionRegistry(file);
+  assert.equal((await registry.resolveMessage("om_old_progress"))?.completionEvidence, "discovered");
 });
