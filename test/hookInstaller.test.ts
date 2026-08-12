@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeClaudeHooks, mergeCodexHook, NOTIFIER_MARKER, removeNotifierHooks } from "../src/hookInstaller";
+import {
+  mergeClaudeHooks,
+  mergeCodexNotify,
+  NOTIFIER_MARKER,
+  removeCodexNotify,
+  removeNotifierHooks
+} from "../src/hookInstaller";
 
 const options = {
   helperPath: "C:\\Users\\me\\global storage\\feishu-agent-notifier-hook.cjs",
@@ -8,22 +14,44 @@ const options = {
   token: "abc123"
 };
 
-test("merges Codex Stop hook while preserving unrelated hooks", () => {
-  const document: Record<string, any> = {
-    description: "existing",
-    hooks: {
-      Stop: [{ hooks: [{ type: "command", command: "existing-tool" }] }],
-      SessionStart: [{ hooks: [{ type: "command", command: "session-tool" }] }]
-    }
-  };
+test("merges Codex notify before TOML tables", () => {
+  const original = 'model = "gpt-5"\n\n[features]\nmemories = true\n';
+  const result = mergeCodexNotify(original, options);
 
-  mergeCodexHook(document, options);
-  assert.equal(document.hooks.Stop.length, 2);
-  assert.equal(document.hooks.SessionStart.length, 1);
-  const installed = document.hooks.Stop[1].hooks[0];
-  assert.match(installed.command, new RegExp(NOTIFIER_MARKER));
-  assert.match(installed.commandWindows, new RegExp(NOTIFIER_MARKER));
-  assert.equal(installed.async, true);
+  assert.equal(result.changed, true);
+  assert.equal(result.previousNotify, null);
+  assert.match(result.text, new RegExp(`notify = .*${NOTIFIER_MARKER}`));
+  assert.ok(result.text.indexOf("notify =") < result.text.indexOf("[features]"));
+});
+
+test("replaces and restores an existing multiline Codex notify", () => {
+  const original = [
+    'model = "gpt-5"',
+    "notify = [",
+    '  "python",',
+    '  "C:\\\\tools\\\\old.py"',
+    "]",
+    "",
+    "[features]",
+    "hooks = true",
+    ""
+  ].join("\n");
+  const merged = mergeCodexNotify(original, options);
+
+  assert.equal(merged.previousNotify, 'notify = [\n  "python",\n  "C:\\\\tools\\\\old.py"\n]');
+  assert.equal((merged.text.match(/^notify\s*=/gm) ?? []).length, 1);
+
+  const removed = removeCodexNotify(merged.text, merged.previousNotify ?? null);
+  assert.equal(removed.changed, true);
+  assert.match(removed.text, /notify = \[\n  "python",/);
+  assert.doesNotMatch(removed.text, new RegExp(NOTIFIER_MARKER));
+});
+
+test("updates its own Codex notify idempotently without losing saved state", () => {
+  const first = mergeCodexNotify("", options);
+  const second = mergeCodexNotify(first.text, options);
+  assert.equal(second.changed, false);
+  assert.equal(second.previousNotify, undefined);
 });
 
 test("merges Claude Stop and StopFailure hooks idempotently", () => {

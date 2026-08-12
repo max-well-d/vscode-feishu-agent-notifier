@@ -4,12 +4,14 @@
 const http = require("node:http");
 
 function parseArguments(argv) {
-  const result = {};
+  const result = { positional: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value.startsWith("--")) {
       result[value.slice(2)] = argv[index + 1] || "";
       index += 1;
+    } else {
+      result.positional.push(value);
     }
   }
   return result;
@@ -25,9 +27,10 @@ async function readStdin() {
 
 async function main() {
   const args = parseArguments(process.argv.slice(2));
-  const raw = await readStdin();
+  const argvJson = args.positional.find((value) => value.trim().startsWith("{"));
+  const raw = argvJson || await readStdin();
   if (!raw.trim()) {
-    throw new Error("Hook 没有收到 stdin JSON");
+    throw new Error("通知脚本没有收到 stdin 或命令行 JSON");
   }
 
   const event = JSON.parse(raw);

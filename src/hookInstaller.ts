@@ -18,77 +18,124 @@ export interface HookInstallResult {
   claudeChanged: boolean;
 }
 
+interface CodexNotifyMergeResult {
+  text: string;
+  changed: boolean;
+  previousNotify: string | null | undefined;
+}
+
 type JsonObject = Record<string, any>;
 
 export async function installHooks(options: InstallHooksOptions): Promise<HookInstallResult> {
   const home = options.homeDirectory ?? os.homedir();
-  const codexPath = path.join(home, ".codex", "hooks.json");
+  const codexPath = path.join(home, ".codex", "config.toml");
+  const legacyCodexHooksPath = path.join(home, ".codex", "hooks.json");
+  const codexStatePath = path.join(home, ".codex", "feishu-agent-notifier-state.json");
   const claudePath = path.join(home, ".claude", "settings.json");
 
-  const codexDocument = await readJsonObject(codexPath);
+  const codexConfig = await readText(codexPath);
+  const codexMerge = mergeCodexNotify(codexConfig, options);
+  const legacyCodexDocument = await readJsonObject(legacyCodexHooksPath);
   const claudeDocument = await readJsonObject(claudePath);
-  const codexChanged = mergeCodexHook(codexDocument, options);
+  const legacyCodexChanged = removeNotifierHooks(legacyCodexDocument);
   const claudeChanged = mergeClaudeHooks(claudeDocument, options);
 
-  if (codexChanged) {
-    await writeJsonWithBackup(codexPath, codexDocument);
+  if (codexMerge.previousNotify !== undefined) {
+    await writeJsonFile(codexStatePath, { previousNotify: codexMerge.previousNotify });
+  }
+  if (codexMerge.changed) {
+    await writeTextWithBackup(codexPath, codexMerge.text);
+  }
+  if (legacyCodexChanged) {
+    await writeJsonWithBackup(legacyCodexHooksPath, legacyCodexDocument);
   }
   if (claudeChanged) {
     await writeJsonWithBackup(claudePath, claudeDocument);
   }
 
-  return { codexPath, claudePath, codexChanged, claudeChanged };
+  return {
+    codexPath,
+    claudePath,
+    codexChanged: codexMerge.changed || legacyCodexChanged,
+    claudeChanged
+  };
 }
 
 export async function uninstallHooks(homeDirectory?: string): Promise<HookInstallResult> {
   const home = homeDirectory ?? os.homedir();
-  const codexPath = path.join(home, ".codex", "hooks.json");
+  const codexPath = path.join(home, ".codex", "config.toml");
+  const legacyCodexHooksPath = path.join(home, ".codex", "hooks.json");
+  const codexStatePath = path.join(home, ".codex", "feishu-agent-notifier-state.json");
   const claudePath = path.join(home, ".claude", "settings.json");
-  const codexDocument = await readJsonObject(codexPath);
+  const previousNotify = await readPreviousNotify(codexStatePath);
+  const codexRemoval = removeCodexNotify(await readText(codexPath), previousNotify);
+  const legacyCodexDocument = await readJsonObject(legacyCodexHooksPath);
   const claudeDocument = await readJsonObject(claudePath);
-  const codexChanged = removeNotifierHooks(codexDocument);
+  const legacyCodexChanged = removeNotifierHooks(legacyCodexDocument);
   const claudeChanged = removeNotifierHooks(claudeDocument);
 
-  if (codexChanged) {
-    await writeJsonWithBackup(codexPath, codexDocument);
+  if (codexRemoval.changed) {
+    await writeTextWithBackup(codexPath, codexRemoval.text);
+  }
+  if (legacyCodexChanged) {
+    await writeJsonWithBackup(legacyCodexHooksPath, legacyCodexDocument);
   }
   if (claudeChanged) {
     await writeJsonWithBackup(claudePath, claudeDocument);
   }
+  await fs.rm(codexStatePath, { force: true });
 
-  return { codexPath, claudePath, codexChanged, claudeChanged };
+  return {
+    codexPath,
+    claudePath,
+    codexChanged: codexRemoval.changed || legacyCodexChanged,
+    claudeChanged
+  };
 }
 
-export function mergeCodexHook(document: JsonObject, options: InstallHooksOptions): boolean {
-  const hooks = ensureHooks(document);
-  const stopGroups = ensureEventGroups(hooks, "Stop");
-  removeMatchingGroups(stopGroups);
-
-  const argumentsText = [
-    shellQuotePosix(options.helperPath),
+export function mergeCodexNotify(configText: string, options: InstallHooksOptions): CodexNotifyMergeResult {
+  const command = [
+    "node",
+    options.helperPath,
     "--port", String(options.port),
-    "--token", shellQuotePosix(options.token),
+    "--token", options.token,
     "--source", "codex",
     "--notifier-id", NOTIFIER_MARKER
-  ].join(" ");
-  const windowsArguments = [
-    shellQuotePowerShell(options.helperPath),
-    "--port", String(options.port),
-    "--token", shellQuotePowerShell(options.token),
-    "--source", "codex",
-    "--notifier-id", NOTIFIER_MARKER
-  ].join(" ");
+  ];
+  const assignment = `notify = ${JSON.stringify(command)}`;
+  const existing = findRootNotifyAssignment(configText);
 
-  stopGroups.push({
-    hooks: [{
-      type: "command",
-      command: `node ${argumentsText}`,
-      commandWindows: `node ${windowsArguments}`,
-      async: true,
-      timeout: 10
-    }]
-  });
-  return true;
+  if (existing?.text === assignment) {
+    return { text: normalizeFinalNewline(configText), changed: false, previousNotify: undefined };
+  }
+
+  const lines = normalizedLines(configText);
+  let previousNotify: string | null | undefined;
+  if (existing) {
+    lines.splice(existing.startLine, existing.endLine - existing.startLine + 1, assignment);
+    previousNotify = existing.text.includes(NOTIFIER_MARKER) ? undefined : existing.text;
+  } else {
+    const firstTable = findFirstTableLine(lines);
+    lines.splice(firstTable, 0, assignment, "");
+    previousNotify = null;
+  }
+
+  return { text: joinLines(lines), changed: true, previousNotify };
+}
+
+export function removeCodexNotify(
+  configText: string,
+  previousNotify: string | null
+): { text: string; changed: boolean } {
+  const existing = findRootNotifyAssignment(configText);
+  if (!existing || !existing.text.includes(NOTIFIER_MARKER)) {
+    return { text: normalizeFinalNewline(configText), changed: false };
+  }
+
+  const lines = normalizedLines(configText);
+  const replacement = previousNotify ? previousNotify.split("\n") : [];
+  lines.splice(existing.startLine, existing.endLine - existing.startLine + 1, ...replacement);
+  return { text: joinLines(collapseExtraLeadingBlankLines(lines)), changed: true };
 }
 
 export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOptions): boolean {
@@ -194,7 +241,41 @@ async function readJsonObject(filePath: string): Promise<JsonObject> {
   }
 }
 
+async function readText(filePath: string): Promise<string> {
+  try {
+    return (await fs.readFile(filePath, "utf8")).replace(/^\uFEFF/, "");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  }
+}
+
+async function readPreviousNotify(filePath: string): Promise<string | null> {
+  try {
+    const value = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
+    if (isObject(value) && (typeof value.previousNotify === "string" || value.previousNotify === null)) {
+      return value.previousNotify;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return null;
+}
+
 async function writeJsonWithBackup(filePath: string, document: JsonObject): Promise<void> {
+  await writeTextWithBackup(filePath, `${JSON.stringify(document, null, 2)}\n`);
+}
+
+async function writeJsonFile(filePath: string, document: JsonObject): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+}
+
+async function writeTextWithBackup(filePath: string, text: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const backupPath = `${filePath}.feishu-agent-notifier.bak`;
   try {
@@ -212,15 +293,98 @@ async function writeJsonWithBackup(filePath: string, document: JsonObject): Prom
     }
   }
 
-  await fs.writeFile(filePath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+  await fs.writeFile(filePath, text, "utf8");
 }
 
-function shellQuotePosix(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
+interface NotifyAssignment {
+  startLine: number;
+  endLine: number;
+  text: string;
 }
 
-function shellQuotePowerShell(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
+function findRootNotifyAssignment(text: string): NotifyAssignment | undefined {
+  const lines = normalizedLines(text);
+  const firstTable = findFirstTableLine(lines);
+  for (let index = 0; index < firstTable; index += 1) {
+    if (!/^\s*notify\s*=/.test(lines[index])) {
+      continue;
+    }
+    let endLine = index;
+    while (endLine + 1 < firstTable && !tomlArrayAssignmentComplete(lines.slice(index, endLine + 1).join("\n"))) {
+      endLine += 1;
+    }
+    return { startLine: index, endLine, text: lines.slice(index, endLine + 1).join("\n") };
+  }
+  return undefined;
+}
+
+function tomlArrayAssignmentComplete(text: string): boolean {
+  const value = text.slice(text.indexOf("=") + 1);
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  let inComment = false;
+  let sawArray = false;
+
+  for (const character of value) {
+    if (inComment) {
+      if (character === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
+    if (quote) {
+      if (quote === '"' && escaped) {
+        escaped = false;
+      } else if (quote === '"' && character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (character === "#") {
+      inComment = true;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "[") {
+      depth += 1;
+      sawArray = true;
+    } else if (character === "]") {
+      depth -= 1;
+    }
+  }
+  return sawArray && depth <= 0 && !quote;
+}
+
+function normalizedLines(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+function findFirstTableLine(lines: string[]): number {
+  const index = lines.findIndex((line) => /^\s*\[\[?[^#]/.test(line));
+  return index === -1 ? lines.length : index;
+}
+
+function collapseExtraLeadingBlankLines(lines: string[]): string[] {
+  while (lines.length > 1 && lines[0] === "" && lines[1] === "") {
+    lines.shift();
+  }
+  return lines;
+}
+
+function joinLines(lines: string[]): string {
+  const joined = lines.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  return joined ? `${joined}\n` : "";
+}
+
+function normalizeFinalNewline(text: string): string {
+  return text ? `${text.replace(/\s+$/, "")}\n` : "";
 }
 
 function isObject(value: unknown): value is JsonObject {

@@ -117,14 +117,14 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
     const helperPath = helperDestination(context);
     const port = getSetting<number>("port", 37561);
     const result = await installHooks({ helperPath, port, token });
-    output?.info(`Codex hooks: ${result.codexPath}`);
+    output?.info(`Codex notify: ${result.codexPath}`);
     output?.info(`Claude hooks: ${result.claudePath}`);
     const detail = [
       result.codexChanged ? "Codex 已更新" : "Codex 无变化",
       result.claudeChanged ? "Claude Code 已更新" : "Claude Code 无变化"
     ].join("；");
     await vscode.window.showInformationMessage(
-      `Hooks 安装完成：${detail}。首次运行 Codex 时请用 /hooks 审核并信任新 Hook。`
+      `通知接入安装完成：${detail}。Codex 使用 notify，无需 /hooks 审核。`
     );
   } catch (error) {
     await showOperationError("安装 Hooks 失败", error);
@@ -133,7 +133,7 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
 
 async function removeHookFiles(): Promise<void> {
   const answer = await vscode.window.showWarningMessage(
-    "从用户级 Codex 与 Claude Code 配置中移除 Feishu Agent Notifier Hooks？",
+    "从用户级 Codex 与 Claude Code 配置中移除 Feishu Agent Notifier 通知接入？",
     { modal: true },
     "移除"
   );
@@ -247,7 +247,7 @@ async function loadNotifierConfig(context: vscode.ExtensionContext): Promise<Not
     receiveIdType: getSetting<ReceiveIdType>("receiveIdType", "chat_id"),
     receiveId: getSetting<string>("receiveId", "").trim(),
     includeMetadata: getSetting<boolean>("includeMetadata", true),
-    maxChunkCharacters: getSetting<number>("maxChunkCharacters", 12000),
+    maxChunkCharacters: getSetting<number>("maxChunkCharacters", 3000),
     notifyOnFailure: getSetting<boolean>("notifyOnFailure", true)
   };
 }
