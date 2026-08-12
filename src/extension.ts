@@ -6,6 +6,11 @@ import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
 import { eventDeduplicationKey } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { installHooks, uninstallHooks } from "./hookInstaller";
+import {
+  formatLocalNotification,
+  LocalNotificationMode,
+  shouldShowLocalNotification
+} from "./localNotification";
 import { LocalHookServer } from "./server";
 import { AgentEvent, DeliveryMode, MessageFormat, NotifierConfig, ReceiveIdType } from "./types";
 
@@ -33,6 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.installHooks", () => installHookFiles(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.uninstallHooks", removeHookFiles),
     vscode.commands.registerCommand("feishuAgentNotifier.testNotification", () => sendTestNotification(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.testLocalNotification", sendLocalTestNotification),
     vscode.commands.registerCommand("feishuAgentNotifier.storeSecrets", () => storeSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.clearSecrets", () => clearSecrets(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.openSettings", openSettings),
@@ -106,6 +112,9 @@ function enqueueEvent(context: vscode.ExtensionContext, sender: FeishuSender, ev
     return;
   }
   recentEvents.set(key, now);
+  void showLocalNotification(event).catch((error) => {
+    output?.warn(`本地提醒失败：${(error as Error).message}`);
+  });
 
   sendQueue = sendQueue
     .then(async () => {
@@ -124,6 +133,41 @@ function enqueueEvent(context: vscode.ExtensionContext, sender: FeishuSender, ev
         }
       });
     });
+}
+
+async function showLocalNotification(event: AgentEvent, force = false): Promise<void> {
+  const mode = getSetting<LocalNotificationMode>("localNotificationMode", "always");
+  if (!force && !shouldShowLocalNotification(mode, vscode.window.state.focused)) {
+    return;
+  }
+
+  const maximumPreviewCharacters = getSetting<number>("localNotificationPreviewCharacters", 160);
+  const notification = formatLocalNotification(event, maximumPreviewCharacters);
+  const action = "查看完整回复";
+  const selection = event.status === "failed"
+    ? await vscode.window.showErrorMessage(notification.text, action)
+    : await vscode.window.showInformationMessage(notification.text, action);
+  if (selection === action) {
+    const document = await vscode.workspace.openTextDocument({
+      content: event.message,
+      language: "markdown"
+    });
+    await vscode.window.showTextDocument(document, { preview: true });
+  }
+}
+
+async function sendLocalTestNotification(): Promise<void> {
+  await showLocalNotification({
+    source: "codex",
+    eventName: "local-test",
+    status: "completed",
+    sessionId: "local-test",
+    turnId: crypto.randomUUID(),
+    cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
+    project: vscode.workspace.name ?? "VS Code",
+    message: "本地提醒工作正常。点击“查看完整回复”可在 Markdown 编辑器中查看完整内容。",
+    occurredAt: new Date().toISOString()
+  }, true);
 }
 
 async function installHookFiles(context: vscode.ExtensionContext): Promise<void> {

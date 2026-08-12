@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Add VS Code local completion and failure notifications for Codex and Claude Code.
+- Let users show notifications always, only while the window is unfocused, or never.
+- Include a configurable final-response preview and a button that opens the complete reply as Markdown.
+- Add a dedicated command for testing local notifications.
+- Add explicit coverage for Claude Code CLI hook input through stdin.
+
 ## 0.4.0
 
 - Send notifications as Feishu JSON 2.0 message cards by default.

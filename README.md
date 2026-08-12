@@ -1,12 +1,15 @@
 # Feishu Agent Notifier
 
-一个轻量 VS Code 扩展：Codex 或 Claude Code 的主 Agent 结束一次回复后，把最后一条 assistant 消息的**完整内容**发送到指定飞书目标。
+一个轻量 VS Code 扩展：Codex 或 Claude Code 的主 Agent 结束一次回复后，把最后一条 assistant 消息的**完整内容**发送到指定飞书目标，并显示 VS Code 本地提醒。
 
 ## 特性
 
 - 支持 Codex CLI 官方 `notify` 回调，无需在 CLI 中执行 `/hooks` 信任。
 - 支持 Codex VS Code IDE：监听新增的本地 transcript `task_complete` 事件，弥补当前 app-server 不调用 `notify` 的差异。
 - 支持 Claude Code `Stop` 和 `StopFailure` Hooks。
+- Codex CLI 与 Claude Code CLI 均支持；通知内容是最终 assistant 回复，不包含终端中全部工具 stdout/stderr。
+- 支持 VS Code 本地完成/失败提醒，可选择始终显示、仅窗口失焦时显示或关闭。
+- 本地提醒包含可配置的回复预览，并可一键打开完整 Markdown 回复。
 - Codex 从命令行参数接收 `agent-turn-complete` JSON；Claude Code 从 stdin 接收 Hook JSON。
 - 最终回复不截断；超过单条上限时按 Unicode 字符自动分片。
 - 默认使用飞书 JSON 2.0 消息卡片渲染 Markdown；Markdown 表格会转换为卡片原生表格。
@@ -25,7 +28,7 @@ cd vscode-feishu-agent-notifier
 npm install
 npm test
 npm run package
-code --install-extension .\feishu-agent-notifier-0.4.0.vsix
+code --install-extension .\feishu-agent-notifier-0.5.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -40,6 +43,8 @@ code --install-extension .\feishu-agent-notifier-0.4.0.vsix
 4. 应用机器人模式还需在设置中填写 `Receive Id Type` 和 `Receive Id`。
 5. 运行 `飞书 Agent 通知：发送测试消息`。
 6. 运行 `飞书 Agent 通知：安装/更新 Codex 与 Claude Code 通知接入`。
+
+本地提醒默认开启。可运行 `飞书 Agent 通知：发送本地测试提醒` 单独测试；通过 `localNotificationMode` 选择 `always`、`whenUnfocused` 或 `off`。
 
 也可以直接在 VS Code 设置界面填写所有字段。需要注意，普通设置保存在 `settings.json`，敏感字段推荐通过安全保存命令写入 SecretStorage；安全存储值优先于普通设置。
 
@@ -74,7 +79,7 @@ code --install-extension .\feishu-agent-notifier-0.4.0.vsix
 
 `watchCodexIde` 默认开启。该兼容层依赖 Codex 本地 transcript 格式；如果未来 Codex IDE 原生支持外部完成通知，可以关闭该设置。扩展只读取最终完成事件中的 `last_agent_message`，不会发送推理内容或工具调用记录。
 
-扩展或 VS Code 没有运行时，本地接收器不可用，转发脚本会安全退出，Codex/Claude Code 本身不会被阻塞。
+扩展或 VS Code 没有运行时，本地接收器不可用，飞书推送与 VS Code 本地提醒都不会触发；转发脚本会安全退出，Codex/Claude Code 本身不会被阻塞。
 
 ## 完整内容与分片
 

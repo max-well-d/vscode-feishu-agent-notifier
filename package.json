@@ -1,8 +1,8 @@
 {
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
-  "description": "Send the complete final Codex or Claude Code response to Feishu when a turn ends.",
-  "version": "0.4.0",
+  "description": "Send Codex or Claude Code completion notifications to Feishu and VS Code.",
+  "version": "0.5.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -23,6 +23,7 @@
     "onCommand:feishuAgentNotifier.installHooks",
     "onCommand:feishuAgentNotifier.uninstallHooks",
     "onCommand:feishuAgentNotifier.testNotification",
+    "onCommand:feishuAgentNotifier.testLocalNotification",
     "onCommand:feishuAgentNotifier.storeSecrets",
     "onCommand:feishuAgentNotifier.clearSecrets",
     "onCommand:feishuAgentNotifier.openSettings",
@@ -49,6 +50,10 @@
       {
         "command": "feishuAgentNotifier.testNotification",
         "title": "飞书 Agent 通知：发送测试消息"
+      },
+      {
+        "command": "feishuAgentNotifier.testLocalNotification",
+        "title": "飞书 Agent 通知：发送本地测试提醒"
       },
       {
         "command": "feishuAgentNotifier.storeSecrets",
@@ -198,6 +203,32 @@
           "scope": "machine",
           "order": 35,
           "description": "监听本机 Codex IDE transcript 的 task_complete 事件，以覆盖当前 app-server 不调用 notify 的情况。"
+        },
+        "feishuAgentNotifier.localNotificationMode": {
+          "type": "string",
+          "enum": [
+            "always",
+            "whenUnfocused",
+            "off"
+          ],
+          "enumDescriptions": [
+            "每次 Agent 完成或失败时都显示 VS Code 本地提醒。",
+            "仅当 VS Code 窗口失去焦点时显示本地提醒。",
+            "关闭本地提醒；飞书推送不受影响。"
+          ],
+          "default": "always",
+          "scope": "machine",
+          "order": 36,
+          "description": "Codex 或 Claude Code 结束时的 VS Code 本地提醒策略。"
+        },
+        "feishuAgentNotifier.localNotificationPreviewCharacters": {
+          "type": "integer",
+          "default": 160,
+          "minimum": 0,
+          "maximum": 500,
+          "scope": "machine",
+          "order": 37,
+          "description": "本地提醒中显示的最终回复预览字符数；设为 0 时只显示工具、状态和项目。"
         }
       }
     }
