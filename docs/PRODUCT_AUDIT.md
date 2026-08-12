@@ -4,7 +4,7 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 
 ## Current readiness
 
-| Area | 0.9.0 status | Mature open-source expectation |
+| Area | 0.9.1 status | Mature open-source expectation |
 | --- | --- | --- |
 | Core message capture | Good | Claude official MessageDisplay with transcript compatibility fallback; Codex transcript watching plus notify and completion fallbacks |
 | Delivery reliability | Good | Unicode-safe chunking, timeouts, bounded retry/backoff, token caching, deduplication, and an offline queue |

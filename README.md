@@ -12,7 +12,7 @@
 - 支持 Claude Code `MessageDisplay`、`Stop` 和 `StopFailure` Hooks；transcript 只在等待首个 `MessageDisplay` 或未安装该 Hook 时作为兼容监听。
 - Codex CLI 与 Claude Code CLI 均支持；通知内容是最终 assistant 回复，不包含终端中全部工具 stdout/stderr。
 - 支持 VS Code 本地完成/失败提醒，可选择始终显示、仅窗口失焦时显示或关闭。
-- 在左下角实时显示通知状态，包括实时、发送中、待处理、暂停、需配置、需修复和异常；悬停可查看完整健康信息。
+- 在右下角实时显示通知状态，包括实时、发送中、待处理、暂停、需配置、需修复和异常；悬停可查看完整健康信息。
 - 点击状态栏可直接测试、暂停当前工作区、重试队列、修复 Hook、运行自检、打开设置或日志。
 - 本地提醒包含可配置的回复预览，并可一键打开完整 Markdown 回复。
 - Codex 从命令行参数接收 `agent-turn-complete` JSON；Claude Code 从 stdin 接收 Hook JSON。
@@ -37,7 +37,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.9.0.vsix
+code --install-extension .\feishu-agent-notifier-0.9.1.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -58,7 +58,7 @@ code --install-extension .\feishu-agent-notifier-0.9.0.vsix
 
 ### 状态中心
 
-扩展在 VS Code 左下角显示当前通知状态。飞书 Webhook/API 是按次请求，因此“实时”表示本地接收器、配置和 Agent 接入已经就绪，不代表维持了永久网络连接。
+扩展在 VS Code 右下角显示当前通知状态。飞书 Webhook/API 是按次请求，因此“实时”表示本地接收器、配置和 Agent 接入已经就绪，不代表维持了永久网络连接。
 
 将鼠标悬停在状态栏上，可查看投递模式、本地端口、Codex notify、Claude Code 消息来源、待处理数量以及最近一次成功或错误。点击状态栏会打开轻量操作菜单。
 

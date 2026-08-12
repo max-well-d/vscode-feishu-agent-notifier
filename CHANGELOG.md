@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Move the live Feishu status center from the left side to the right side of the VS Code status bar.
+
 ## 0.9.0
 
 - Add a live Feishu status center to the left side of the VS Code status bar.

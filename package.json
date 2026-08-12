@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send every Codex or Claude Code assistant message to Feishu in realtime, with completion and local notification modes.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",

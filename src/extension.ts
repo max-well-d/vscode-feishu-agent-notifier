@@ -64,7 +64,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   extensionStoragePath = context.globalStorageUri.fsPath;
   activeExtensionId = context.extension.id;
   output = vscode.window.createOutputChannel("Feishu Agent Notifier", { log: true });
-  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
+  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
   statusBar.name = "Feishu Agent Notifier 状态";
   statusBar.command = "feishuAgentNotifier.showStatus";
   renderStatusBar();
