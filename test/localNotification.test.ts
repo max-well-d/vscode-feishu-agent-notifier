@@ -50,3 +50,9 @@ test("can hide the local message preview", () => {
   assert.equal(truncatePreview(event.message, 0), "");
   assert.equal(formatLocalNotification(event, 0).text, formatLocalNotification(event, 0).title);
 });
+
+test("labels realtime assistant messages without calling them completed", () => {
+  const notification = formatLocalNotification({ ...event, status: "progress" }, 160);
+  assert.match(notification.title, /实时消息/);
+  assert.doesNotMatch(notification.title, /已完成/);
+});

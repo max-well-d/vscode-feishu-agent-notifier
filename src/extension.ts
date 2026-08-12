@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
+import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
-import { eventDeduplicationKey } from "./event";
+import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
 import {
@@ -13,7 +14,14 @@ import {
 } from "./localNotification";
 import { LocalHookServer } from "./server";
 import { drainPendingEvents, pendingEventCount, queuePendingEvent } from "./pendingQueue";
-import { AgentEvent, DeliveryMode, MessageFormat, NotifierConfig, ReceiveIdType } from "./types";
+import {
+  AgentEvent,
+  DeliveryMode,
+  DeliveryTiming,
+  MessageFormat,
+  NotifierConfig,
+  ReceiveIdType
+} from "./types";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
 const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
@@ -23,6 +31,7 @@ const SECRET_HOOK_TOKEN = "feishuAgentNotifier.hookToken";
 
 let hookServer: LocalHookServer | undefined;
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
+let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
 let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.LogOutputChannel | undefined;
 let sendQueue: Promise<void> = Promise.resolve();
@@ -33,6 +42,7 @@ let lastDeliveryErrorNotificationAt = 0;
 let extensionStoragePath = "";
 let activeExtensionId = "local.feishu-agent-notifier";
 const recentEvents = new Map<string, number>();
+const recentMessageBodies = new Map<string, { timestamp: number; origin: AgentEvent["origin"] }>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extensionStoragePath = context.globalStorageUri.fsPath;
@@ -74,6 +84,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 export async function deactivate(): Promise<void> {
   codexTranscriptWatcher?.stop();
   codexTranscriptWatcher = undefined;
+  claudeTranscriptWatcher?.stop();
+  claudeTranscriptWatcher = undefined;
   await hookServer?.stop();
   hookServer = undefined;
 }
@@ -81,6 +93,8 @@ export async function deactivate(): Promise<void> {
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   codexTranscriptWatcher?.stop();
   codexTranscriptWatcher = undefined;
+  claudeTranscriptWatcher?.stop();
+  claudeTranscriptWatcher = undefined;
   await hookServer?.stop();
   hookServer = undefined;
   if (!getSetting<boolean>("enabled", true)) {
@@ -90,6 +104,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
 
   const token = await getOrCreateHookToken(context);
   const integrationTest = process.env.FEISHU_AGENT_NOTIFIER_TEST === "1";
+  const deliveryTiming = getSetting<DeliveryTiming>("deliveryTiming", "realtime");
   const port = integrationTest ? 0 : getSetting<number>("port", 37561);
   const sender = new FeishuSender();
   hookServer = new LocalHookServer(token, async (event) => {
@@ -100,15 +115,27 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
     await hookServer.start(port);
     output?.info(`本地 Hook 接收器正在监听 127.0.0.1:${port}`);
     void retryPendingEvents(context, false);
-    if (!integrationTest && getSetting<boolean>("watchCodexIde", true)) {
+    if (!integrationTest && (deliveryTiming === "realtime" || getSetting<boolean>("watchCodexIde", true))) {
       codexTranscriptWatcher = new CodexTranscriptWatcher(
         async (event) => enqueueEvent(context, sender, event),
         vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
         undefined,
-        (error) => output?.warn(`Codex IDE transcript 监听失败：${error.message}`)
+        (error) => output?.warn(`Codex transcript 监听失败：${error.message}`),
+        1_500,
+        deliveryTiming
       );
       await codexTranscriptWatcher.start();
-      output?.info("Codex IDE transcript 完成事件监听已启动。");
+      output?.info(`Codex transcript ${deliveryTiming === "realtime" ? "实时消息" : "完成事件"}监听已启动。`);
+    }
+    if (!integrationTest && deliveryTiming === "realtime") {
+      claudeTranscriptWatcher = new ClaudeTranscriptWatcher(
+        async (event) => enqueueEvent(context, sender, event),
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
+        undefined,
+        (error) => output?.warn(`Claude Code transcript 监听失败：${error.message}`)
+      );
+      await claudeTranscriptWatcher.start();
+      output?.info("Claude Code transcript 实时消息监听已启动。");
     }
   } catch (error) {
     hookServer = undefined;
@@ -126,6 +153,7 @@ function enqueueEvent(
   queueOnFailure = true
 ): Promise<void> {
   const key = eventDeduplicationKey(event);
+  let messageKey: string | undefined;
   const now = Date.now();
   cleanupRecentEvents(now);
   if (key !== "unknown:::Stop" && recentEvents.has(key)) {
@@ -133,6 +161,15 @@ function enqueueEvent(
     return Promise.resolve();
   }
   recentEvents.set(key, now);
+  if (queueOnFailure && getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime") {
+    messageKey = realtimeMessageKey(event);
+    const observed = recentMessageBodies.get(messageKey);
+    if (observed && isCrossOriginDuplicate(observed.origin, event.origin)) {
+      output?.info(`忽略 transcript/Hook 重复消息：${event.source}/${event.sessionId}`);
+      return Promise.resolve();
+    }
+    recentMessageBodies.set(messageKey, { timestamp: now, origin: event.origin });
+  }
   void showLocalNotification(event).catch((error) => {
     output?.warn(`本地提醒失败：${(error as Error).message}`);
   });
@@ -150,6 +187,9 @@ function enqueueEvent(
   sendQueue = delivery.catch(async (error) => {
       if (recentEvents.get(key) === now) {
         recentEvents.delete(key);
+      }
+      if (messageKey && recentMessageBodies.get(messageKey)?.timestamp === now) {
+        recentMessageBodies.delete(messageKey);
       }
       const message = `发送飞书通知失败：${(error as Error).message}`;
       lastDeliveryError = message;
@@ -178,6 +218,9 @@ function enqueueEvent(
 }
 
 async function showLocalNotification(event: AgentEvent, force = false): Promise<void> {
+  if (!force && event.status === "progress" && !getSetting<boolean>("localNotificationRealtime", false)) {
+    return;
+  }
   const mode = getSetting<LocalNotificationMode>("localNotificationMode", "always");
   if (!force && !shouldShowLocalNotification(mode, vscode.window.state.focused)) {
     return;
@@ -444,7 +487,7 @@ function updateStatusBar(): void {
   }
   if (hookServer?.port) {
     statusBar.text = "$(bell) 飞书 Agent";
-    statusBar.tooltip = `正在监听 127.0.0.1:${hookServer.port}`;
+    statusBar.tooltip = `正在监听 127.0.0.1:${hookServer.port} · ${getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime" ? "实时逐条" : "仅结束"}`;
   } else {
     statusBar.text = "$(warning) 飞书 Agent";
     statusBar.tooltip = "本地 Hook 接收器未运行；点击查看状态";
@@ -453,12 +496,13 @@ function updateStatusBar(): void {
 
 async function showStatus(): Promise<void> {
   const mode = getSetting<DeliveryMode>("deliveryMode", "webhook");
+  const timing = getSetting<DeliveryTiming>("deliveryTiming", "realtime");
   const pending = await pendingEventCount(pendingDirectory());
   const receiver = hookServer?.port
     ? `运行中（127.0.0.1:${hookServer.port}）`
     : "未运行或由另一个 VS Code 窗口占用";
   const selection = await vscode.window.showInformationMessage(
-    `Feishu Agent Notifier：${receiver}；投递模式：${mode}；待处理：${pending}。`,
+    `Feishu Agent Notifier：${receiver}；${timing === "realtime" ? "实时逐条" : "仅结束"}；投递模式：${mode}；待处理：${pending}。`,
     "打开设置",
     "运行自检",
     "查看日志"
@@ -535,6 +579,14 @@ async function clearPendingEvents(): Promise<void> {
 async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
   const checks: string[] = [];
   checks.push(checkLine("扩展已启用", getSetting<boolean>("enabled", true)));
+  checks.push(checkLine("消息投递时机", true,
+    getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime"
+      ? "实时逐条 assistant 文本"
+      : "仅任务结束"));
+  if (getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime") {
+    checks.push(checkLine("Codex 实时监听", Boolean(codexTranscriptWatcher), "~/.codex/sessions"));
+    checks.push(checkLine("Claude Code 实时监听", Boolean(claudeTranscriptWatcher), "~/.claude/projects"));
+  }
   checks.push(checkLine("本地接收器", Boolean(hookServer?.port), hookServer?.port
     ? `127.0.0.1:${hookServer.port}`
     : "未运行或端口被其他窗口占用"));
@@ -635,6 +687,17 @@ function cleanupRecentEvents(now: number): void {
       recentEvents.delete(key);
     }
   }
+  for (const [key, observed] of recentMessageBodies) {
+    if (now - observed.timestamp > 10 * 60 * 1000) {
+      recentMessageBodies.delete(key);
+    }
+  }
+}
+
+function realtimeMessageKey(event: AgentEvent): string {
+  return crypto.createHash("sha256")
+    .update(`${event.source}\0${event.sessionId}\0${event.message}`)
+    .digest("hex");
 }
 
 async function showOperationError(prefix: string, error: unknown): Promise<void> {

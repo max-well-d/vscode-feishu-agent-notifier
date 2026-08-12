@@ -1,9 +1,12 @@
 # Feishu Agent Notifier
 
-一个轻量 VS Code 扩展：Codex 或 Claude Code 的主 Agent 结束一次回复后，把最后一条 assistant 消息的**完整内容**发送到指定飞书目标，并显示 VS Code 本地提醒。
+一个轻量开源 VS Code 开发扩展：实时把 Codex 或 Claude Code 主 Agent 的每条 assistant 文本消息发送到指定飞书目标，也可切换为只在任务结束时发送最后一条完整回复。
 
 ## 特性
 
+- 默认实时逐条转发：Codex 的每条 `commentary` / `final_answer`，以及 Claude Code transcript 中每条 assistant 文本消息，通常在写入后约 1.5 秒内发送。
+- 实时模式只发送主 Agent 的 assistant 可见文本，不发送 thinking、工具参数、工具输出、用户输入或 Claude Code sidechain/subagent 内部消息。
+- 可通过 `deliveryTiming=completion` 切回仅结束通知；transcript 与 Stop/notify 的相同最终正文会自动去重。
 - 支持 Codex CLI 官方 `notify` 回调，无需在 CLI 中执行 `/hooks` 信任。
 - 支持 Codex VS Code IDE：监听新增的本地 transcript `task_complete` 事件，弥补当前 app-server 不调用 `notify` 的差异。
 - 支持 Claude Code `Stop` 和 `StopFailure` Hooks。
@@ -32,7 +35,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.6.0.vsix
+code --install-extension .\feishu-agent-notifier-0.7.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -49,7 +52,7 @@ code --install-extension .\feishu-agent-notifier-0.6.0.vsix
 6. 运行 `飞书 Agent 通知：安装/更新 Codex 与 Claude Code 通知接入`。
 7. 运行 `飞书 Agent 通知：运行自检与修复`。
 
-本地提醒默认开启。可运行 `飞书 Agent 通知：发送本地测试提醒` 单独测试；通过 `localNotificationMode` 选择 `always`、`whenUnfocused` 或 `off`。
+本地提醒默认开启。可运行 `飞书 Agent 通知：发送本地测试提醒` 单独测试；通过 `localNotificationMode` 选择 `always`、`whenUnfocused` 或 `off`。实时过程消息默认只发飞书，不逐条弹出 VS Code 提醒；如需要可开启 `localNotificationRealtime`。
 
 非敏感选项可直接在 VS Code 设置界面填写。Webhook、签名密钥、App ID 和 App Secret 只通过“安全保存飞书凭据”命令写入 SecretStorage；0.6.0 会把旧版本遗留的明文凭据自动迁移并清除。
 
@@ -82,11 +85,13 @@ code --install-extension .\feishu-agent-notifier-0.6.0.vsix
 
 安装器会删除本扩展旧版本写入 `~/.codex/hooks.json` 的 Codex `Stop` Hook，避免重复发送。Codex CLI 的 `notify` 不经过非托管 Hook 信任流程，因此无需 `/hooks`。Codex IDE 当前使用 app-server，不会稳定调用该 `notify`；扩展因此只监听启动以后新增到 `~/.codex/sessions` 的 `task_complete`，不会补发历史回复。CLI 与 IDE 事件通过 session/turn ID 去重。
 
-`watchCodexIde` 默认开启。该兼容层依赖 Codex 本地 transcript 格式；如果未来 Codex IDE 原生支持外部完成通知，可以关闭该设置。扩展只读取最终完成事件中的 `last_agent_message`，不会发送推理内容或工具调用记录。
+`deliveryTiming` 默认是 `realtime`。实时兼容层增量监听 `~/.codex/sessions` 和 `~/.claude/projects`：只处理扩展启动后新写入的 assistant 文本，不补发历史记录。Codex 官方 Hooks 提供工具生命周期和 Stop，但没有稳定的“每条 assistant 文本”事件；官方也说明 transcript 格式不是稳定接口，因此自检和完成 Hook 会继续作为兼容与兜底能力。
+
+`watchCodexIde` 控制 completion 模式下的 Codex IDE transcript 完成监听；实时模式必须启用 Codex transcript 监听，因此该模式下此开关不会关闭实时消息。
 
 扩展或 VS Code 没有运行时，本地接收器不可用。默认情况下，转发脚本会把完整事件写入扩展的私有 `globalStorage/pending-events` 目录，VS Code 下次启动后自动补投并显示本地提醒；Codex/Claude Code 本身不会被阻塞。可关闭 `queueWhenOffline`，关闭后离线事件会被丢弃且不会把回复正文暂存到磁盘。
 
-离线队列解决的是“不丢消息”，不是 VS Code 关闭后的实时发送。若必须在 VS Code 完全退出时仍实时推送，需要单独运行受保护的后台服务；本扩展当前不安装常驻系统服务。
+离线队列解决的是“不丢最终消息”，不是 VS Code 关闭后的实时逐条发送。VS Code 退出时，Codex/Claude 的 Stop Hook 仍可保存最终事件，但过程中没有 Hook 触发的 assistant 文本无法实时捕获。若必须在 VS Code 完全退出时仍逐条推送，需要单独运行受保护的 transcript 后台服务；本扩展当前不安装常驻系统服务。
 
 ## 完整内容与分片
 
@@ -124,4 +129,4 @@ code --install-extension .\feishu-agent-notifier-0.6.0.vsix
 
 ## 产品成熟度
 
-当前能力、正式发布门槛以及与专业通知产品相比仍缺少的部分，持续记录在 [产品就绪审计](docs/PRODUCT_AUDIT.md)。主要后续方向是 Marketplace 品牌资产、Extension Host 集成测试、远程环境支持、内容策略与可查询投递历史。
+当前能力、正式发布门槛以及作为成熟开源开发工具仍缺少的部分，持续记录在 [产品就绪审计](docs/PRODUCT_AUDIT.md)。主要后续方向是后台实时服务、远程环境支持、内容策略与可查询投递历史。

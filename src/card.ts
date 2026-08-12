@@ -19,13 +19,14 @@ export function buildFeishuCard(
       ? "Codex"
       : "Agent";
   const failed = event.status === "failed";
+  const progress = event.status === "progress";
   const partLabel = part && part.total > 1 ? ` · ${part.index}/${part.total}` : "";
   const header = includeMetadata
     ? {
-      template: failed ? "red" : "green",
+      template: failed ? "red" : progress ? "blue" : "green",
       title: {
         tag: "plain_text",
-        content: `${failed ? "❌" : "✅"} ${source} ${failed ? "执行失败" : "已完成"}`
+        content: `${failed ? "❌" : progress ? "💬" : "✅"} ${source} ${failed ? "执行失败" : progress ? "实时消息" : "已完成"}`
       },
       subtitle: {
         tag: "plain_text",
@@ -33,7 +34,7 @@ export function buildFeishuCard(
       }
     }
     : {
-      template: failed ? "red" : "green",
+      template: failed ? "red" : progress ? "blue" : "green",
       title: { tag: "plain_text", content: `Agent 通知${partLabel}` }
     };
 

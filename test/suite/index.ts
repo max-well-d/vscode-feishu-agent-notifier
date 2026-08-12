@@ -20,6 +20,7 @@ export async function run(): Promise<void> {
 
   const config = vscode.workspace.getConfiguration("feishuAgentNotifier");
   assert.equal(config.get("enabled"), true);
+  assert.equal(config.get("deliveryTiming"), "realtime");
   assert.equal(config.get("queueWhenOffline"), true);
   assert.equal(config.get("deliveryMaxAttempts"), 3);
   assert.equal(config.get("deliveryErrorNotificationCooldownMinutes"), 5);

@@ -42,3 +42,9 @@ test("turns a GitHub Markdown table into a native Feishu table", () => {
   assert.equal(elements[1].rows[0].column_3, "**必要**");
   assert.equal(elements[1].row_height, "auto");
 });
+
+test("renders realtime messages with a distinct blue header", () => {
+  const card = buildFeishuCard({ ...event, status: "progress" }, "正在执行测试", true) as any;
+  assert.equal(card.header.template, "blue");
+  assert.match(card.header.title.content, /实时消息/);
+});

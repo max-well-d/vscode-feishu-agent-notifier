@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeAgentEvent, projectNameFromCwd, splitMessage } from "../src/event";
+import {
+  isCrossOriginDuplicate,
+  normalizeAgentEvent,
+  projectNameFromCwd,
+  splitMessage
+} from "../src/event";
 
 test("normalizes a Codex Stop event without truncating the final message", () => {
   const fullMessage = "第一行\n" + "完整内容🙂".repeat(5000);
@@ -45,4 +50,11 @@ test("extracts project names across Windows and POSIX path formats", () => {
   assert.equal(projectNameFromCwd("C:\\work\\project-a\\"), "project-a");
   assert.equal(projectNameFromCwd("/work/project-b/"), "project-b");
   assert.equal(projectNameFromCwd(""), "unknown-project");
+});
+
+test("deduplicates matching bodies only across transcript and hook origins", () => {
+  assert.equal(isCrossOriginDuplicate("transcript", "hook"), true);
+  assert.equal(isCrossOriginDuplicate("hook", "transcript"), true);
+  assert.equal(isCrossOriginDuplicate("transcript", "transcript"), false);
+  assert.equal(isCrossOriginDuplicate("hook", "hook"), false);
 });

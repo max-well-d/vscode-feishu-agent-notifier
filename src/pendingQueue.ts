@@ -176,13 +176,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function parsePendingEvent(value: Record<string, unknown>): AgentEvent {
   if ((value.source === "codex" || value.source === "claude-code" || value.source === "unknown")
-    && (value.status === "completed" || value.status === "failed")
+    && (value.status === "progress" || value.status === "completed" || value.status === "failed")
     && typeof value.eventName === "string"
     && typeof value.message === "string") {
     return {
       source: value.source,
       eventName: value.eventName,
       status: value.status,
+      origin: value.origin === "transcript" || value.origin === "hook" ? value.origin : undefined,
       sessionId: typeof value.sessionId === "string" ? value.sessionId : "",
       turnId: typeof value.turnId === "string" ? value.turnId : "",
       cwd: typeof value.cwd === "string" ? value.cwd : "",

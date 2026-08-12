@@ -1,11 +1,14 @@
 export type DeliveryMode = "webhook" | "app";
 export type ReceiveIdType = "open_id" | "user_id" | "email" | "chat_id";
 export type MessageFormat = "card" | "text";
+export type DeliveryTiming = "realtime" | "completion";
 
 export interface AgentEvent {
   source: "codex" | "claude-code" | "unknown";
   eventName: string;
-  status: "completed" | "failed";
+  status: "progress" | "completed" | "failed";
+  eventId?: string;
+  origin?: "transcript" | "hook";
   sessionId: string;
   turnId: string;
   cwd: string;

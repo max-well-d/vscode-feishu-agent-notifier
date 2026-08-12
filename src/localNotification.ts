@@ -24,8 +24,12 @@ export function formatLocalNotification(
     : event.source === "codex"
       ? "Codex"
       : "Agent";
-  const status = event.status === "failed" ? "执行失败" : "已完成";
-  const icon = event.status === "failed" ? "❌" : "✅";
+  const status = event.status === "failed"
+    ? "执行失败"
+    : event.status === "progress"
+      ? "实时消息"
+      : "已完成";
+  const icon = event.status === "failed" ? "❌" : event.status === "progress" ? "💬" : "✅";
   const title = `${icon} ${source} ${status} · ${event.project}`;
   const preview = truncatePreview(event.message, maximumPreviewCharacters);
   return {

@@ -1,8 +1,8 @@
 {
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
-  "description": "Send Codex or Claude Code completion notifications to Feishu and VS Code.",
-  "version": "0.6.0",
+  "description": "Send every Codex or Claude Code assistant message to Feishu in realtime, with completion and local notification modes.",
+  "version": "0.7.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -168,6 +168,21 @@
           "order": 2,
           "description": "飞书投递模式。"
         },
+        "feishuAgentNotifier.deliveryTiming": {
+          "type": "string",
+          "enum": [
+            "realtime",
+            "completion"
+          ],
+          "enumDescriptions": [
+            "实时转发主 Agent 产生的每条 assistant 文本消息，包括 Codex commentary 和 final answer；不发送思考、工具参数、工具输出或用户输入。",
+            "仅在 Agent 当前任务结束或失败时发送最后一条 assistant 消息。"
+          ],
+          "default": "realtime",
+          "scope": "machine",
+          "order": 3,
+          "description": "Agent 消息的投递时机。实时模式依赖本地 transcript 增量监听。"
+        },
         "feishuAgentNotifier.receiveIdType": {
           "type": "string",
           "enum": [
@@ -240,7 +255,7 @@
           "default": true,
           "scope": "machine",
           "order": 35,
-          "description": "监听本机 Codex IDE transcript 的 task_complete 事件，以覆盖当前 app-server 不调用 notify 的情况。"
+          "description": "completion 模式下监听 Codex IDE transcript 的 task_complete 事件。realtime 模式始终监听 transcript，以逐条发送 assistant 文本。"
         },
         "feishuAgentNotifier.localNotificationMode": {
           "type": "string",
@@ -268,11 +283,18 @@
           "order": 37,
           "description": "本地提醒中显示的最终回复预览字符数；设为 0 时只显示工具、状态和项目。"
         },
+        "feishuAgentNotifier.localNotificationRealtime": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "order": 38,
+          "description": "实时投递模式下，每条过程消息也显示 VS Code 本地弹窗。默认关闭以避免频繁打扰；飞书实时发送不受影响。"
+        },
         "feishuAgentNotifier.queueWhenOffline": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "order": 38,
+          "order": 39,
           "description": "VS Code 未运行或本地接收器不可用时，将完整 Agent 事件暂存到扩展私有目录，并在下次启动后补投。关闭可避免在磁盘上暂存回复正文。"
         },
         "feishuAgentNotifier.deliveryMaxAttempts": {
@@ -281,7 +303,7 @@
           "minimum": 1,
           "maximum": 5,
           "scope": "machine",
-          "order": 39,
+          "order": 40,
           "description": "飞书网络错误、限流或服务端错误的最大请求次数。"
         },
         "feishuAgentNotifier.retryBaseDelayMs": {
@@ -290,7 +312,7 @@
           "minimum": 100,
           "maximum": 5000,
           "scope": "machine",
-          "order": 40,
+          "order": 41,
           "description": "飞书临时错误重试的初始等待时间（毫秒），后续按指数退避。"
         },
         "feishuAgentNotifier.deliveryErrorNotificationCooldownMinutes": {
@@ -299,7 +321,7 @@
           "minimum": 1,
           "maximum": 60,
           "scope": "machine",
-          "order": 41,
+          "order": 42,
           "description": "自动投递持续失败时，VS Code 错误弹窗的最小间隔（分钟）；完整错误始终写入日志。"
         }
       }

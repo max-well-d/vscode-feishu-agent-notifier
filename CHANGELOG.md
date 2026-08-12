@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0
+
+- Add realtime delivery for every persisted main-agent assistant text message, enabled by default.
+- Forward Codex `commentary` and `final_answer` transcript messages individually.
+- Forward every Claude Code assistant text transcript entry while excluding thinking, tool use, tool results, and user input.
+- Deduplicate the same final message when transcript monitoring and Codex notify or Claude Stop observe it together.
+- Keep `completion` delivery timing as a compatibility option.
+- Add an optional setting for showing VS Code local popups for realtime progress messages; it is off by default.
+- Render realtime Feishu cards with a distinct blue “实时消息” header.
+- Add transcript parser, watcher, privacy-filter, card, and local-notification coverage.
+
 ## 0.6.0
 
 - Preserve up to 100 complete Agent events while VS Code is offline and deliver them after the extension starts again.

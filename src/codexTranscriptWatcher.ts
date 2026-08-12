@@ -1,7 +1,8 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { AgentEvent } from "./types";
+import { AgentEvent, DeliveryTiming } from "./types";
 import { projectNameFromCwd } from "./event";
 
 interface FileState {
@@ -30,7 +31,8 @@ export class CodexTranscriptWatcher {
     private readonly fallbackCwd: string,
     private readonly sessionsRoot = path.join(os.homedir(), ".codex", "sessions"),
     private readonly onError: (error: Error) => void = () => undefined,
-    private readonly pollIntervalMs = 1_500
+    private readonly pollIntervalMs = 1_500,
+    private readonly deliveryTiming: DeliveryTiming = "completion"
   ) {}
 
   public async start(): Promise<void> {
@@ -143,7 +145,13 @@ export class CodexTranscriptWatcher {
       }
       const line = combined.subarray(start, index).toString("utf8").replace(/\r$/, "");
       start = index + 1;
-      const event = parseCodexTranscriptLine(line, filePath, state, this.fallbackCwd);
+      const event = parseCodexTranscriptLine(
+        line,
+        filePath,
+        state,
+        this.fallbackCwd,
+        this.deliveryTiming
+      );
       if (event) {
         await this.onEvent(event);
       }
@@ -156,7 +164,8 @@ export function parseCodexTranscriptLine(
   line: string,
   filePath: string,
   state: Pick<FileState, "cwdByTurnId" | "finalMessageByTurnId">,
-  fallbackCwd: string
+  fallbackCwd: string,
+  deliveryTiming: DeliveryTiming = "completion"
 ): AgentEvent | undefined {
   if (!line.trim()) {
     return undefined;
@@ -184,15 +193,33 @@ export function parseCodexTranscriptLine(
 
   if (entry.type === "response_item"
     && payload.type === "message"
-    && payload.role === "assistant"
-    && payload.phase === "final_answer") {
+    && payload.role === "assistant") {
     const metadata = isObject(payload.internal_chat_message_metadata_passthrough)
       ? payload.internal_chat_message_metadata_passthrough
       : {};
     const turnId = stringValue(metadata.turn_id);
     const message = messageContent(payload.content);
-    if (turnId && message) {
+    const phase = stringValue(payload.phase);
+    if (phase === "final_answer" && turnId && message) {
       state.finalMessageByTurnId.set(turnId, message);
+    }
+    if (deliveryTiming === "realtime"
+      && (phase === "commentary" || phase === "final_answer")
+      && message) {
+      const cwd = state.cwdByTurnId.get(turnId) || fallbackCwd;
+      return {
+        source: "codex",
+        eventName: `assistant-message:${phase}`,
+        status: phase === "final_answer" ? "completed" : "progress",
+        origin: "transcript",
+        eventId: messageEventId(entry.timestamp, phase, turnId, message),
+        sessionId: sessionIdFromPath(filePath),
+        turnId,
+        cwd,
+        project: projectNameFromCwd(cwd),
+        message,
+        occurredAt: typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString()
+      };
     }
     return undefined;
   }
@@ -209,10 +236,15 @@ export function parseCodexTranscriptLine(
   state.cwdByTurnId.delete(turnId);
   state.finalMessageByTurnId.delete(turnId);
 
+  if (deliveryTiming === "realtime") {
+    return undefined;
+  }
+
   return {
     source: "codex",
     eventName: "agent-turn-complete",
     status: "completed",
+    origin: "transcript",
     sessionId: sessionIdFromPath(filePath),
     turnId,
     cwd,
@@ -256,4 +288,10 @@ function stringValue(value: unknown): string {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function messageEventId(timestamp: unknown, phase: string, turnId: string, message: string): string {
+  return crypto.createHash("sha256")
+    .update(`${typeof timestamp === "string" ? timestamp : ""}\0${phase}\0${turnId}\0${message}`)
+    .digest("hex");
 }

@@ -71,6 +71,53 @@ test("ignores commentary and malformed transcript lines", () => {
   }), "x.jsonl", parserState, ""), undefined);
 });
 
+test("emits every Codex commentary and final assistant message in realtime mode", () => {
+  const parserState = state();
+  const transcriptPath = "rollout-live-session.jsonl";
+  parseCodexTranscriptLine(JSON.stringify({
+    type: "turn_context",
+    payload: { turn_id: "turn-live", cwd: "C:\\work\\live" }
+  }), transcriptPath, parserState, "C:\\fallback", "realtime");
+
+  const commentary = parseCodexTranscriptLine(JSON.stringify({
+    timestamp: "2026-08-12T06:00:00.000Z",
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "assistant",
+      phase: "commentary",
+      content: [{ type: "output_text", text: "正在运行测试。" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn-live" }
+    }
+  }), transcriptPath, parserState, "C:\\fallback", "realtime");
+  const final = parseCodexTranscriptLine(JSON.stringify({
+    timestamp: "2026-08-12T06:00:01.000Z",
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: "测试全部通过。" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn-live" }
+    }
+  }), transcriptPath, parserState, "C:\\fallback", "realtime");
+
+  assert.equal(commentary?.status, "progress");
+  assert.equal(commentary?.message, "正在运行测试。");
+  assert.equal(final?.status, "completed");
+  assert.equal(final?.message, "测试全部通过。");
+  assert.notEqual(commentary?.eventId, final?.eventId);
+});
+
+test("does not emit task_complete again in realtime mode", () => {
+  const parserState = state();
+  const event = parseCodexTranscriptLine(JSON.stringify({
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "turn-live", last_agent_message: "已经发送" }
+  }), "rollout-live-session.jsonl", parserState, "C:\\fallback", "realtime");
+  assert.equal(event, undefined);
+});
+
 test("watcher baselines existing history and emits only newly appended completions", async () => {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-codex-watcher-"));
   const now = new Date();

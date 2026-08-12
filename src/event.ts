@@ -32,6 +32,7 @@ export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
     source,
     eventName,
     status: failed ? "failed" : "completed",
+    origin: "hook",
     sessionId: stringValue(input["thread-id"]) || stringValue(input.session_id),
     turnId: stringValue(input["turn-id"]) || stringValue(input.turn_id) || stringValue(input.prompt_id),
     cwd,
@@ -52,7 +53,16 @@ export function projectNameFromCwd(cwd: string): string {
 }
 
 export function eventDeduplicationKey(event: AgentEvent): string {
-  return [event.source, event.sessionId, event.turnId, event.eventName].join(":");
+  return event.eventId
+    ? [event.source, event.sessionId, event.eventId].join(":")
+    : [event.source, event.sessionId, event.turnId, event.eventName].join(":");
+}
+
+export function isCrossOriginDuplicate(
+  previousOrigin: AgentEvent["origin"],
+  currentOrigin: AgentEvent["origin"]
+): boolean {
+  return Boolean(previousOrigin && currentOrigin && previousOrigin !== currentOrigin);
 }
 
 export function formatEventMessage(event: AgentEvent, includeMetadata: boolean): string {
@@ -65,7 +75,11 @@ export function formatEventMessage(event: AgentEvent, includeMetadata: boolean):
     : event.source === "codex"
       ? "Codex"
       : "Agent";
-  const status = event.status === "failed" ? "❌ 执行失败" : "✅ 已完成";
+  const status = event.status === "failed"
+    ? "❌ 执行失败"
+    : event.status === "progress"
+      ? "💬 实时消息"
+      : "✅ 已完成";
   const metadata = [
     `工具：${source}`,
     `项目：${event.project}`,
