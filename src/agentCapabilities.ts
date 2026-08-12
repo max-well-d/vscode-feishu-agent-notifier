@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
 
 export interface AgentCapabilities {
   codexVersion?: string;
@@ -10,12 +11,15 @@ export interface AgentCapabilities {
 type CommandRunner = (command: string, args: string[]) => Promise<string | undefined>;
 
 export async function detectAgentCapabilities(
-  run: CommandRunner = runCommand
+  run: CommandRunner = runCommand,
+  commands: { codex?: string; claude?: string } = {}
 ): Promise<AgentCapabilities> {
+  const codex = commands.codex ?? "codex";
+  const claude = commands.claude ?? "claude";
   const [codexVersionOutput, codexFeaturesOutput, claudeVersionOutput] = await Promise.all([
-    run("codex", ["--version"]),
-    run("codex", ["features", "list"]),
-    run("claude", ["--version"])
+    run(codex, ["--version"]),
+    run(codex, ["features", "list"]),
+    run(claude, ["--version"])
   ]);
   const codexVersion = parseVersion(codexVersionOutput);
   const claudeVersion = parseVersion(claudeVersionOutput);
@@ -57,10 +61,9 @@ function numericVersion(value: string): [number, number, number] {
 
 function runCommand(command: string, args: string[]): Promise<string | undefined> {
   return new Promise((resolve) => {
-    const executable = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : command;
-    const executableArgs = process.platform === "win32"
-      ? ["/d", "/s", "/c", command, ...args]
-      : args;
+    const direct = process.platform !== "win32" || path.isAbsolute(command) || /\.exe$/i.test(command);
+    const executable = direct ? command : (process.env.ComSpec || "cmd.exe");
+    const executableArgs = direct ? args : ["/d", "/s", "/c", command, ...args];
     execFile(executable, executableArgs, {
       timeout: 3_000,
       windowsHide: true,

@@ -41,7 +41,8 @@ interface PendingJob {
 export class AgentReplyRunner {
   public constructor(
     private readonly timeoutMs = 30 * 60 * 1000,
-    private readonly spawnImpl: typeof spawn = spawn
+    private readonly spawnImpl: typeof spawn = spawn,
+    private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>
   ) {}
 
   public async run(job: AgentReplyJob, signal: AbortSignal): Promise<AgentReplyResult> {
@@ -59,9 +60,14 @@ export class AgentReplyRunner {
       throw new Error(`会话工作目录不可用：${job.session.cwd || "未记录"}`);
     }
     const command = buildAgentCommand(job.session, job.policy);
+    const resolvedExecutable = await this.executableResolver?.(job.session.source as "codex" | "claude-code");
+    if (this.executableResolver && !resolvedExecutable) {
+      const displayName = job.session.source === "codex" ? "Codex" : "Claude Code";
+      throw new Error(`未找到 ${displayName} CLI；请在扩展设置中指定可执行文件路径`);
+    }
     return runChildProcess(
       this.spawnImpl,
-      command.executable,
+      resolvedExecutable ?? command.executable,
       command.args,
       job.session.cwd,
       job.prompt,

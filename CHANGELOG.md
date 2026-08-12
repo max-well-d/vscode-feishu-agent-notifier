@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+- Resolve Codex and Claude Code executables from their installed official VS Code extensions before falling back to `PATH`.
+- Add optional explicit CLI path settings and include resolved paths in diagnostics.
+- Fix Feishu remote replies failing with `spawn codex.exe ENOENT` when the VS Code extension host has a narrower `PATH` than the integrated terminal.
+
 ## 0.12.1
 
 - Add a guided visual remote-control setup wizard for execution policy, app notification target, user allowlist, group allowlist, and group mention protection.

@@ -44,7 +44,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.12.1.vsix
+code --install-extension .\feishu-agent-notifier-0.12.2.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -117,6 +117,8 @@ code --install-extension .\feishu-agent-notifier-0.12.1.vsix
 普通文本按“引用消息 → 当前聊天已选择会话”的顺序解析目标，不使用“最近会话”猜测。飞书消息 ID、会话 ID、工作目录、别名和选择状态保存在扩展私有目录，默认最多保留 500 个会话和 5,000 条消息映射；消息映射 30 天后过期。
 
 如果目标会话仍在执行，回复会等待其完成。扩展通过公开 CLI 恢复持久化会话，不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 必须保持运行；同一个飞书 App ID 应只在一台电脑上启用入站连接，因为飞书长连接的多个客户端采用集群分发而不是广播。
+
+扩展会自动查找 OpenAI 与 Claude Code 官方 VS Code 扩展内置的 CLI，因此不要求扩展宿主和终端拥有相同的 `PATH`。若使用独立安装或定制 CLI，可在可视化设置中填写 `Codex Executable Path` / `Claude Executable Path`；完整自检会显示最终解析到的路径。
 
 `projectDestinations` 可为应用机器人配置项目路由，例如：
 

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
 import { AgentCapabilities, detectAgentCapabilities } from "./agentCapabilities";
+import { resolveAgentExecutable, ResumableAgentSource } from "./agentExecutable";
 import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
 import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
@@ -58,6 +59,7 @@ let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
 let claudeRealtimeSource: "message-display" | "transcript" | "probing" | undefined;
 let agentCapabilities: AgentCapabilities = {};
+let agentExecutablePaths: Partial<Record<ResumableAgentSource, string>> = {};
 let receiverStandbyPort: number | undefined;
 let receiverConflictPort: number | undefined;
 let receiverTakeoverTimer: NodeJS.Timeout | undefined;
@@ -98,12 +100,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBar.show();
   context.subscriptions.push(output, statusBar);
   sessionRegistry = new SessionRegistry(path.join(context.globalStorageUri.fsPath, "remote-sessions.json"));
-  agentReplyQueue = createAgentReplyQueue(context);
-  replyRouter = createReplyRouter(context);
   await migrateLegacySecrets(context);
   await migrateWorkspacePause(context);
-  agentCapabilities = await detectAgentCapabilities();
+  await refreshAgentExecutables();
+  agentCapabilities = await detectAgentCapabilities(undefined, {
+    codex: agentExecutablePaths.codex,
+    claude: agentExecutablePaths["claude-code"]
+  });
   logAgentCapabilities();
+  agentReplyQueue = createAgentReplyQueue(context);
+  replyRouter = createReplyRouter(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("feishuAgentNotifier.installHooks", () => installHookFiles(context)),
@@ -335,7 +341,14 @@ function stopReceiverTakeoverMonitor(): void {
 function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueue {
   const timeoutMinutes = getSetting<number>("remoteReplyTimeoutMinutes", 30);
   return new AgentReplyQueue(
-    new AgentReplyRunner(Math.max(1, timeoutMinutes) * 60_000),
+    new AgentReplyRunner(
+      Math.max(1, timeoutMinutes) * 60_000,
+      undefined,
+      async (source) => {
+        await refreshAgentExecutables();
+        return agentExecutablePaths[source];
+      }
+    ),
     1,
     {
       waitUntilReady: (job, signal) => waitUntilAgentSessionIdle(job, signal),
@@ -539,6 +552,23 @@ function logAgentCapabilities(): void {
     ? `${agentCapabilities.claudeVersion}，MessageDisplay ${agentCapabilities.claudeMessageDisplay === true ? "可用" : agentCapabilities.claudeMessageDisplay === false ? "不可用" : "未知"}`
     : "未检测到";
   output?.info(`Agent 能力：Codex ${codex}；Claude Code ${claude}。`);
+  output?.info(`Agent CLI：Codex ${agentExecutablePaths.codex ?? "未解析"}；Claude Code ${agentExecutablePaths["claude-code"] ?? "未解析"}。`);
+}
+
+async function refreshAgentExecutables(): Promise<void> {
+  const codexExtension = vscode.extensions.getExtension("openai.chatgpt");
+  const claudeExtension = vscode.extensions.getExtension("anthropic.claude-code");
+  const [codex, claude] = await Promise.all([
+    resolveAgentExecutable("codex", {
+      configuredPath: getSetting<string>("codexExecutablePath", ""),
+      extensionPath: codexExtension?.extensionPath
+    }),
+    resolveAgentExecutable("claude-code", {
+      configuredPath: getSetting<string>("claudeExecutablePath", ""),
+      extensionPath: claudeExtension?.extensionPath
+    })
+  ]);
+  agentExecutablePaths = { codex, "claude-code": claude };
 }
 
 function enqueueEvent(
@@ -1185,7 +1215,11 @@ async function clearPendingEvents(context: vscode.ExtensionContext): Promise<voi
 }
 
 async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
-  agentCapabilities = await detectAgentCapabilities();
+  await refreshAgentExecutables();
+  agentCapabilities = await detectAgentCapabilities(undefined, {
+    codex: agentExecutablePaths.codex,
+    claude: agentExecutablePaths["claude-code"]
+  });
   logAgentCapabilities();
   const checks: string[] = [];
   checks.push(checkLine("扩展已启用", getSetting<boolean>("enabled", true)));
@@ -1221,6 +1255,10 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
   checks.push(checkLine("飞书远程回复策略", true,
     remotePolicy === "disabled" ? "已禁用" : remotePolicy === "planOnly" ? "只读规划" : "继承本机权限"));
   if (remotePolicy !== "disabled") {
+    checks.push(checkLine("Codex CLI", Boolean(agentExecutablePaths.codex),
+      agentExecutablePaths.codex ?? "未找到；可在扩展设置中指定路径"));
+    checks.push(checkLine("Claude Code CLI", Boolean(agentExecutablePaths["claude-code"]),
+      agentExecutablePaths["claude-code"] ?? "未找到；可在扩展设置中指定路径"));
     checks.push(checkLine("飞书入站长连接", feishuInboundState === "connected",
       `${feishuInboundState}${feishuInboundError ? `，${feishuInboundError}` : ""}`));
     checks.push(checkLine("远程用户白名单",

@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -292,12 +292,26 @@
           "order": 29,
           "description": "目标会话正在运行时，远程回复等待其结束的最长分钟数。"
         },
+        "feishuAgentNotifier.codexExecutablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "order": 30,
+          "description": "可选的 Codex CLI 绝对路径。留空时自动查找 OpenAI VS Code 扩展内置 CLI 和 PATH。"
+        },
+        "feishuAgentNotifier.claudeExecutablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "order": 31,
+          "description": "可选的 Claude Code CLI 绝对路径。留空时自动查找 Claude Code VS Code 扩展内置 CLI 和 PATH。"
+        },
         "feishuAgentNotifier.projectDestinations": {
           "type": "object",
           "default": {},
           "additionalProperties": { "type": "string" },
           "scope": "machine",
-          "order": 30,
+          "order": 32,
           "description": "可选的项目路由：键为项目名或绝对路径，值为飞书 chat_id；仅应用机器人模式生效。"
         },
         "feishuAgentNotifier.port": {
