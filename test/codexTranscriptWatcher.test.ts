@@ -157,6 +157,38 @@ test("watcher baselines existing history and emits only newly appended completio
   }
 });
 
+test("watcher continues an old Codex session created more than two days ago", async () => {
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-codex-old-session-"));
+  const oldDirectory = path.join(temporaryRoot, "2025", "01", "02");
+  await fs.mkdir(oldDirectory, { recursive: true });
+  const filePath = path.join(oldDirectory, "rollout-019ff3d7-8893-7291-9178-1c50cb90686f.jsonl");
+  await fs.writeFile(filePath, `${JSON.stringify({
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "old", last_agent_message: "历史消息" }
+  })}\n`, "utf8");
+
+  const events: string[] = [];
+  const watcher = new CodexTranscriptWatcher(
+    (event) => { events.push(event.message); },
+    "D:\\fallback",
+    temporaryRoot,
+    (error) => { throw error; },
+    20
+  );
+  try {
+    await watcher.start();
+    await fs.appendFile(filePath, `${JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "resumed", last_agent_message: "恢复后的新消息" }
+    })}\n`, "utf8");
+    await waitFor(() => events.length === 1, 1_000);
+    assert.deepEqual(events, ["恢复后的新消息"]);
+  } finally {
+    watcher.stop();
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {

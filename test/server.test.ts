@@ -46,6 +46,21 @@ test("local receiver emits one event for a complete MessageDisplay sequence", as
   assert.equal(events[0].origin, "display-hook");
 });
 
+test("health endpoint identifies only an authenticated notifier receiver", async (t) => {
+  const server = new LocalHookServer("health-token", async () => undefined);
+  await server.start(0);
+  t.after(async () => server.stop());
+  assert.ok(server.port);
+
+  const unauthorized = await fetch(`http://127.0.0.1:${server.port}/health`);
+  assert.equal(unauthorized.status, 401);
+  const response = await fetch(`http://127.0.0.1:${server.port}/health`, {
+    headers: { "X-Feishu-Agent-Token": "health-token" }
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "ok", service: "feishu-agent-notifier" });
+});
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (!predicate()) {

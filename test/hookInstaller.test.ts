@@ -7,6 +7,7 @@ import {
   inspectHooks,
   installHooks,
   mergeClaudeHooks,
+  mergeCodexHooks,
   mergeCodexNotify,
   NOTIFIER_MARKER,
   removeCodexNotify,
@@ -16,8 +17,8 @@ import {
 
 const options = {
   helperPath: "C:\\Users\\me\\global storage\\feishu-agent-notifier-hook.cjs",
+  tokenFilePath: "C:\\Users\\me\\global storage\\receiver-token",
   port: 37561,
-  token: "abc123"
 };
 
 test("merges Codex notify before TOML tables", () => {
@@ -60,6 +61,22 @@ test("updates its own Codex notify idempotently without losing saved state", () 
   assert.equal(second.previousNotify, undefined);
 });
 
+test("merges an official Codex Stop hook without removing unrelated hooks", () => {
+  const document: Record<string, any> = {
+    description: "existing hooks",
+    hooks: {
+      Stop: [{ hooks: [{ type: "command", command: "keep-me" }] }]
+    }
+  };
+  assert.equal(mergeCodexHooks(document, options), true);
+  assert.equal(mergeCodexHooks(document, options), false);
+  assert.equal(document.hooks.Stop.length, 2);
+  assert.equal(document.hooks.Stop[0].hooks[0].command, "keep-me");
+  assert.match(document.hooks.Stop[1].hooks[0].command, /--token-file/);
+  assert.doesNotMatch(document.hooks.Stop[1].hooks[0].command, /abc123/);
+  assert.match(document.hooks.Stop[1].hooks[0].commandWindows, new RegExp(NOTIFIER_MARKER));
+});
+
 test("merges Claude completion and MessageDisplay hooks idempotently", () => {
   const document: Record<string, any> = { hooks: {} };
   mergeClaudeHooks(document, options);
@@ -100,6 +117,8 @@ test("installs inspectable hooks and restores unrelated Codex notify", async (t)
   await installHooks({ ...options, homeDirectory: home });
   const inspection = await inspectHooks(home);
   assert.equal(inspection.codexInstalled, true);
+  assert.equal(inspection.codexNotifyInstalled, true);
+  assert.equal(inspection.codexStopInstalled, true);
   assert.equal(inspection.claudeStopInstalled, true);
   assert.equal(inspection.claudeStopFailureInstalled, true);
   assert.equal(inspection.claudeMessageDisplayInstalled, true);
@@ -108,4 +127,6 @@ test("installs inspectable hooks and restores unrelated Codex notify", async (t)
   const restored = await fs.readFile(path.join(home, ".codex", "config.toml"), "utf8");
   assert.match(restored, /notify = \["python", "old-notify\.py"\]/);
   assert.doesNotMatch(restored, new RegExp(NOTIFIER_MARKER));
+  const hooks = JSON.parse(await fs.readFile(path.join(home, ".codex", "hooks.json"), "utf8"));
+  assert.deepEqual(hooks.hooks, {});
 });

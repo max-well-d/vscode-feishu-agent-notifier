@@ -45,6 +45,9 @@ test("helper accepts Codex notify JSON as the final argv value", async () => {
 });
 
 test("helper accepts Claude Code hook JSON from stdin", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-helper-token-test-"));
+  const tokenFile = path.join(root, "receiver-token");
+  await fs.writeFile(tokenFile, "test-token\n", { encoding: "utf8", mode: 0o600 });
   let received: Record<string, unknown> | undefined;
   const server = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -62,7 +65,7 @@ test("helper accepts Claude Code hook JSON from stdin", async () => {
   const child = spawn(process.execPath, [
     helper,
     "--port", String(address.port),
-    "--token", "test-token",
+    "--token-file", tokenFile,
     "--source", "claude-code",
     "--notifier-id", "feishu-agent-notifier-v1"
   ]);
@@ -74,6 +77,7 @@ test("helper accepts Claude Code hook JSON from stdin", async () => {
   }));
   const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  await fs.rm(root, { recursive: true, force: true });
 
   assert.equal(exitCode, 0);
   assert.equal(stdout.trim(), "{}");

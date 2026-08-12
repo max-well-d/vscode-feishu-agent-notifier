@@ -42,9 +42,9 @@ async function main() {
   event.__notifier_source = args.source || "unknown";
   const body = Buffer.from(JSON.stringify(event), "utf8");
   const port = Number(args.port || 37561);
-
   try {
-    await postEvent(body, port, args.token || "");
+    const token = await readToken(args);
+    await postEvent(body, port, token);
   } catch (error) {
     const queued = args["queue-offline"] !== "false"
       && await queueOfflineEvent(event, error, args.spool);
@@ -54,6 +54,13 @@ async function main() {
       console.error(`[feishu-agent-notifier] ${error.message}`);
     }
   }
+}
+
+async function readToken(args) {
+  if (args["token-file"]) {
+    return (await fs.readFile(args["token-file"], "utf8")).trim();
+  }
+  return args.token || "";
 }
 
 async function postEvent(body, port, token) {

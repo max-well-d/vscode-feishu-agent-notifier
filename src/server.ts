@@ -54,8 +54,12 @@ export class LocalHookServer {
     response: http.ServerResponse
   ): Promise<void> {
     if (request.method === "GET" && request.url === "/health") {
+      if (request.headers["x-feishu-agent-token"] !== this.token) {
+        response.writeHead(401).end();
+        return;
+      }
       response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ status: "ok" }));
+      response.end(JSON.stringify({ status: "ok", service: "feishu-agent-notifier" }));
       return;
     }
 

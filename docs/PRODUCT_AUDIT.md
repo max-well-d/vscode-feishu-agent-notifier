@@ -4,17 +4,17 @@ This audit compares Feishu Agent Notifier with the baseline expected of a produc
 
 ## Current readiness
 
-| Area | 0.9.1 status | Mature open-source expectation |
+| Area | 0.10.0 status | Mature open-source expectation |
 | --- | --- | --- |
-| Core message capture | Good | Claude official MessageDisplay with transcript compatibility fallback; Codex transcript watching plus notify and completion fallbacks |
+| Core message capture | Good | Capability-aware Claude MessageDisplay/transcript selection; Codex official Stop Hook plus notify and transcript fallbacks |
 | Delivery reliability | Good | Unicode-safe chunking, timeouts, bounded retry/backoff, token caching, deduplication, and an offline queue |
 | Credential security | Good | SecretStorage, automatic migration from legacy plaintext settings, loopback-only authenticated receiver |
 | Onboarding | Good | Walkthrough, secure credential wizard, test commands, hook installer, and self-diagnostics |
-| Diagnostics | Good | Live status center, receiver/config/hook/queue checks, redacted report, logs, and actionable repair commands |
+| Diagnostics | Good | Version/capability-aware status center, receiver ownership, config/hook/queue checks, redacted report, logs, and repair commands |
 | Automated quality | Good | Unit/process tests on Windows/Linux, Extension Host activation tests, package-content check, reproducible tag release workflow |
 | Marketplace readiness | Partial | Repository metadata is present, but a verified VS Code Marketplace publisher, icon, screenshots, localization, and store listing are still required |
 | Native background delivery | Partial | Every assistant text is near-realtime while VS Code runs; when it is closed only final Hook events can be queued, so a separate background watcher is required for always-on realtime delivery |
-| Cross-environment support | Partial | Local UI extension behavior is explicit; WSL, SSH, Dev Containers, multiple profiles, and portable hook paths need dedicated end-to-end coverage |
+| Cross-environment support | Partial | Local multi-window ownership and takeover are supported; WSL, SSH, Dev Containers, and cross-profile routing need dedicated end-to-end coverage |
 | Policy controls | Partial | Failure/local notification controls and workspace pause exist; project allow/deny rules, content redaction, quiet hours, and destination routing are not yet implemented |
 | Observability/history | Partial | Logs and last result exist; a searchable delivery history, per-message attempt details, and exportable support bundle are future work |
 
@@ -36,6 +36,7 @@ A stable release should satisfy all of these gates:
 
 - Validate upgrade behavior from 0.4/0.5 on real Windows and Linux profiles.
 - Extend VS Code Extension Host coverage to SecretStorage migration and live configuration changes.
+- Add real Codex and Claude Code smoke tests across the minimum and latest supported versions.
 - Add Marketplace publisher identity, branded PNG icon, screenshots, and a privacy disclosure in the listing.
 
 ### P1 — mature open-source tool depth

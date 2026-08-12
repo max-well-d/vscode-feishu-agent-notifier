@@ -62,6 +62,11 @@ export class CodexTranscriptWatcher {
     }
     try {
       const filePaths = new Set(this.states.keys());
+      if (initial) {
+        for (const filePath of await discoverAllSessionFiles(this.sessionsRoot)) {
+          filePaths.add(filePath);
+        }
+      }
       for (const directory of recentDateDirectories(this.sessionsRoot)) {
         try {
           const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -158,6 +163,32 @@ export class CodexTranscriptWatcher {
     }
     state.pending = combined.subarray(start);
   }
+}
+
+async function discoverAllSessionFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        files.push(entryPath);
+      }
+    }
+  }
+  return files;
 }
 
 export function parseCodexTranscriptLine(

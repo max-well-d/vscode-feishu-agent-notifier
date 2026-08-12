@@ -32,7 +32,7 @@ export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
     source,
     eventName,
     status: failed ? "failed" : "completed",
-    origin: "hook",
+    origin: codexNotify ? "notify" : "hook",
     sessionId: stringValue(input["thread-id"]) || stringValue(input.session_id),
     turnId: stringValue(input["turn-id"]) || stringValue(input.turn_id) || stringValue(input.prompt_id),
     cwd,

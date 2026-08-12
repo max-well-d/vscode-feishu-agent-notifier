@@ -6,13 +6,14 @@ export const NOTIFIER_MARKER = "feishu-agent-notifier-v1";
 
 export interface InstallHooksOptions {
   helperPath: string;
+  tokenFilePath: string;
   port: number;
-  token: string;
   homeDirectory?: string;
 }
 
 export interface HookInstallResult {
   codexPath: string;
+  codexHooksPath: string;
   claudePath: string;
   codexChanged: boolean;
   claudeChanged: boolean;
@@ -20,8 +21,11 @@ export interface HookInstallResult {
 
 export interface HookInspectionResult {
   codexPath: string;
+  codexHooksPath: string;
   claudePath: string;
   codexInstalled: boolean;
+  codexNotifyInstalled: boolean;
+  codexStopInstalled: boolean;
   claudeStopInstalled: boolean;
   claudeStopFailureInstalled: boolean;
   claudeMessageDisplayInstalled: boolean;
@@ -38,15 +42,15 @@ type JsonObject = Record<string, any>;
 export async function installHooks(options: InstallHooksOptions): Promise<HookInstallResult> {
   const home = options.homeDirectory ?? os.homedir();
   const codexPath = path.join(home, ".codex", "config.toml");
-  const legacyCodexHooksPath = path.join(home, ".codex", "hooks.json");
+  const codexHooksPath = path.join(home, ".codex", "hooks.json");
   const codexStatePath = path.join(home, ".codex", "feishu-agent-notifier-state.json");
   const claudePath = path.join(home, ".claude", "settings.json");
 
   const codexConfig = await readText(codexPath);
   const codexMerge = mergeCodexNotify(codexConfig, options);
-  const legacyCodexDocument = await readJsonObject(legacyCodexHooksPath);
+  const codexHooksDocument = await readJsonObject(codexHooksPath);
   const claudeDocument = await readJsonObject(claudePath);
-  const legacyCodexChanged = removeNotifierHooks(legacyCodexDocument);
+  const codexHooksChanged = mergeCodexHooks(codexHooksDocument, options);
   const claudeChanged = mergeClaudeHooks(claudeDocument, options);
 
   if (codexMerge.previousNotify !== undefined) {
@@ -55,8 +59,8 @@ export async function installHooks(options: InstallHooksOptions): Promise<HookIn
   if (codexMerge.changed) {
     await writeTextWithBackup(codexPath, codexMerge.text);
   }
-  if (legacyCodexChanged) {
-    await writeJsonWithBackup(legacyCodexHooksPath, legacyCodexDocument);
+  if (codexHooksChanged) {
+    await writeJsonWithBackup(codexHooksPath, codexHooksDocument);
   }
   if (claudeChanged) {
     await writeJsonWithBackup(claudePath, claudeDocument);
@@ -64,8 +68,9 @@ export async function installHooks(options: InstallHooksOptions): Promise<HookIn
 
   return {
     codexPath,
+    codexHooksPath,
     claudePath,
-    codexChanged: codexMerge.changed || legacyCodexChanged,
+    codexChanged: codexMerge.changed || codexHooksChanged,
     claudeChanged
   };
 }
@@ -73,21 +78,21 @@ export async function installHooks(options: InstallHooksOptions): Promise<HookIn
 export async function uninstallHooks(homeDirectory?: string): Promise<HookInstallResult> {
   const home = homeDirectory ?? os.homedir();
   const codexPath = path.join(home, ".codex", "config.toml");
-  const legacyCodexHooksPath = path.join(home, ".codex", "hooks.json");
+  const codexHooksPath = path.join(home, ".codex", "hooks.json");
   const codexStatePath = path.join(home, ".codex", "feishu-agent-notifier-state.json");
   const claudePath = path.join(home, ".claude", "settings.json");
   const previousNotify = await readPreviousNotify(codexStatePath);
   const codexRemoval = removeCodexNotify(await readText(codexPath), previousNotify);
-  const legacyCodexDocument = await readJsonObject(legacyCodexHooksPath);
+  const codexHooksDocument = await readJsonObject(codexHooksPath);
   const claudeDocument = await readJsonObject(claudePath);
-  const legacyCodexChanged = removeNotifierHooks(legacyCodexDocument);
+  const codexHooksChanged = removeNotifierHooks(codexHooksDocument);
   const claudeChanged = removeNotifierHooks(claudeDocument);
 
   if (codexRemoval.changed) {
     await writeTextWithBackup(codexPath, codexRemoval.text);
   }
-  if (legacyCodexChanged) {
-    await writeJsonWithBackup(legacyCodexHooksPath, legacyCodexDocument);
+  if (codexHooksChanged) {
+    await writeJsonWithBackup(codexHooksPath, codexHooksDocument);
   }
   if (claudeChanged) {
     await writeJsonWithBackup(claudePath, claudeDocument);
@@ -96,8 +101,9 @@ export async function uninstallHooks(homeDirectory?: string): Promise<HookInstal
 
   return {
     codexPath,
+    codexHooksPath,
     claudePath,
-    codexChanged: codexRemoval.changed || legacyCodexChanged,
+    codexChanged: codexRemoval.changed || codexHooksChanged,
     claudeChanged
   };
 }
@@ -105,15 +111,23 @@ export async function uninstallHooks(homeDirectory?: string): Promise<HookInstal
 export async function inspectHooks(homeDirectory?: string): Promise<HookInspectionResult> {
   const home = homeDirectory ?? os.homedir();
   const codexPath = path.join(home, ".codex", "config.toml");
+  const codexHooksPath = path.join(home, ".codex", "hooks.json");
   const claudePath = path.join(home, ".claude", "settings.json");
   const codexNotify = findRootNotifyAssignment(await readText(codexPath));
+  const codexHooksDocument = await readJsonObject(codexHooksPath);
+  const codexHooks = isObject(codexHooksDocument.hooks) ? codexHooksDocument.hooks : {};
   const claudeDocument = await readJsonObject(claudePath);
   const hooks = isObject(claudeDocument.hooks) ? claudeDocument.hooks : {};
+  const codexNotifyInstalled = codexNotify?.text.includes(NOTIFIER_MARKER) ?? false;
+  const codexStopInstalled = eventHasNotifier(codexHooks.Stop);
 
   return {
     codexPath,
+    codexHooksPath,
     claudePath,
-    codexInstalled: codexNotify?.text.includes(NOTIFIER_MARKER) ?? false,
+    codexInstalled: codexNotifyInstalled || codexStopInstalled,
+    codexNotifyInstalled,
+    codexStopInstalled,
     claudeStopInstalled: eventHasNotifier(hooks.Stop),
     claudeStopFailureInstalled: eventHasNotifier(hooks.StopFailure),
     claudeMessageDisplayInstalled: eventHasNotifier(hooks.MessageDisplay)
@@ -125,7 +139,7 @@ export function mergeCodexNotify(configText: string, options: InstallHooksOption
     "node",
     options.helperPath,
     "--port", String(options.port),
-    "--token", options.token,
+    "--token-file", options.tokenFilePath,
     "--source", "codex",
     "--notifier-id", NOTIFIER_MARKER
   ];
@@ -148,6 +162,23 @@ export function mergeCodexNotify(configText: string, options: InstallHooksOption
   }
 
   return { text: joinLines(lines), changed: true, previousNotify };
+}
+
+export function mergeCodexHooks(document: JsonObject, options: InstallHooksOptions): boolean {
+  const before = JSON.stringify(document);
+  const hooks = ensureHooks(document);
+  const groups = ensureEventGroups(hooks, "Stop");
+  removeMatchingGroups(groups);
+  groups.push({
+    hooks: [{
+      type: "command",
+      command: buildCodexHookCommand(options, false),
+      commandWindows: buildCodexHookCommand(options, true),
+      async: true,
+      timeout: 10
+    }]
+  });
+  return JSON.stringify(document) !== before;
 }
 
 export function removeCodexNotify(
@@ -174,7 +205,7 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
     const args = [
       options.helperPath,
       "--port", String(options.port),
-      "--token", options.token,
+      "--token-file", options.tokenFilePath,
       "--source", "claude-code",
       "--notifier-id", NOTIFIER_MARKER
     ];
@@ -192,6 +223,26 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
     });
   }
   return JSON.stringify(document) !== before;
+}
+
+function buildCodexHookCommand(options: InstallHooksOptions, windows: boolean): string {
+  const quote = windows ? quoteWindowsArgument : quotePosixArgument;
+  return [
+    "node",
+    quote(options.helperPath),
+    "--port", String(options.port),
+    "--token-file", quote(options.tokenFilePath),
+    "--source", "codex",
+    "--notifier-id", NOTIFIER_MARKER
+  ].join(" ");
+}
+
+function quotePosixArgument(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function quoteWindowsArgument(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 export function removeNotifierHooks(document: JsonObject): boolean {

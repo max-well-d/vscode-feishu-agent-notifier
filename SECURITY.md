@@ -7,7 +7,7 @@ Feishu Agent Notifier can transmit the complete final response produced by Codex
 In realtime mode, the extension reads local Codex transcripts and receives Claude Code assistant text through the official `MessageDisplay` Hook. Claude transcript watching remains active only until the first valid display event, or as a compatibility fallback when that Hook is unavailable. Known thinking, tool, user, and Claude sidechain records are excluded, but assistant text itself may still contain sensitive information.
 
 - Feishu credentials are stored in VS Code `SecretStorage`. Upgrades automatically migrate legacy plaintext credential settings into `SecretStorage` and remove those settings from the public configuration UI.
-- The local receiver binds only to `127.0.0.1` and requires a random per-installation token.
+- The local receiver binds only to `127.0.0.1` and requires a random per-installation token. Hook configuration contains only the path to a token file under the extension's private storage; the token is not embedded in command arguments, and POSIX systems use file mode `0600`.
 - When offline queuing is enabled, complete Agent events are temporarily stored in the extension's private `globalStorage` directory. Disable `feishuAgentNotifier.queueWhenOffline` if replies must never be written to disk.
 - Diagnostic reports omit credentials, receiver tokens, and Agent response content.
 

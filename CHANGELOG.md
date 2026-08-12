@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.0
+
+- Add the official Codex `Stop` Hook with `last_assistant_message`, while retaining `notify` as a backward-compatible and untrusted-hook fallback.
+- Detect installed Codex and Claude Code capabilities and show the active or degraded capture channel in the status center and diagnostics.
+- Keep Claude Code 2.1.165 and older on transcript compatibility mode instead of indefinitely reporting a pending `MessageDisplay` probe.
+- Add authenticated multi-window receiver standby and automatic takeover after the owning VS Code window closes.
+- Share paused-workspace filtering across windows so the receiver owner honors pause actions from any window in the same profile.
+- Baseline historical Codex session files so sessions resumed from older date directories continue to emit new messages.
+- Move the local receiver token out of Hook command arguments into the extension's private storage, using mode `0600` on POSIX systems.
+- Deduplicate Codex final messages across transcript, official Stop Hook, and legacy notify sources.
+
 ## 0.9.1
 
 - Move the live Feishu status center from the left side to the right side of the VS Code status bar.

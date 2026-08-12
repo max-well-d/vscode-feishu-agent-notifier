@@ -2,9 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
+import { AgentCapabilities, detectAgentCapabilities } from "./agentCapabilities";
 import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
-import { eventBelongsToWorkspace, eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
+import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
 import { HookEventNormalizer } from "./hookEventNormalizer";
@@ -15,6 +16,12 @@ import {
 } from "./localNotification";
 import { LocalHookServer } from "./server";
 import { buildStatusPresentation, StatusSnapshot } from "./statusUi";
+import {
+  eventIsPaused,
+  readPausedWorkspaceRoots,
+  setWorkspacePaused,
+  workspaceIsPaused
+} from "./workspacePause";
 import { drainPendingEvents, pendingEventCount, queuePendingEvent } from "./pendingQueue";
 import {
   AgentEvent,
@@ -36,6 +43,11 @@ let hookServer: LocalHookServer | undefined;
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
 let claudeRealtimeSource: "message-display" | "transcript" | "probing" | undefined;
+let agentCapabilities: AgentCapabilities = {};
+let receiverStandbyPort: number | undefined;
+let receiverConflictPort: number | undefined;
+let receiverTakeoverTimer: NodeJS.Timeout | undefined;
+let receiverProbeRunning = false;
 let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.LogOutputChannel | undefined;
 let sendQueue: Promise<void> = Promise.resolve();
@@ -71,6 +83,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBar.show();
   context.subscriptions.push(output, statusBar);
   await migrateLegacySecrets(context);
+  await migrateWorkspacePause(context);
+  agentCapabilities = await detectAgentCapabilities();
+  logAgentCapabilities();
 
   context.subscriptions.push(
     vscode.commands.registerCommand("feishuAgentNotifier.installHooks", () => installHookFiles(context)),
@@ -99,6 +114,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export async function deactivate(): Promise<void> {
+  stopReceiverTakeoverMonitor();
   codexTranscriptWatcher?.stop();
   codexTranscriptWatcher = undefined;
   claudeTranscriptWatcher?.stop();
@@ -109,6 +125,9 @@ export async function deactivate(): Promise<void> {
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
+  stopReceiverTakeoverMonitor();
+  receiverStandbyPort = undefined;
+  receiverConflictPort = undefined;
   statusSnapshot = { ...statusSnapshot, initializing: true };
   renderStatusBar();
   codexTranscriptWatcher?.stop();
@@ -125,6 +144,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   }
 
   const token = await getOrCreateHookToken(context);
+  await writeHookTokenFile(context, token);
   const integrationTest = process.env.FEISHU_AGENT_NOTIFIER_TEST === "1";
   const deliveryTiming = getSetting<DeliveryTiming>("deliveryTiming", "realtime");
   const port = integrationTest ? 0 : getSetting<number>("port", 37561);
@@ -179,22 +199,112 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
         claudeTranscriptWatcher.stop();
         claudeTranscriptWatcher = undefined;
         claudeRealtimeSource = "message-display";
-      } else if (messageDisplayInstalled) {
+      } else if (messageDisplayInstalled && agentCapabilities.claudeMessageDisplay !== false) {
         claudeRealtimeSource = "probing";
         output?.info("Claude Code MessageDisplay 已配置；transcript 兼容监听将在首次 Hook 事件后关闭。");
       } else {
         claudeRealtimeSource = "transcript";
-        output?.warn("Claude Code MessageDisplay Hook 未安装，暂用 transcript 兼容监听；请运行安装/修复 Hooks。");
+        const reason = agentCapabilities.claudeMessageDisplay === false
+          ? `Claude Code ${agentCapabilities.claudeVersion ?? "当前版本"} 不支持 MessageDisplay`
+          : "Claude Code MessageDisplay Hook 未安装";
+        output?.warn(`${reason}，暂用 transcript 兼容监听。`);
       }
     }
   } catch (error) {
+    await hookServer?.stop();
     hookServer = undefined;
-    const message = (error as NodeJS.ErrnoException).code === "EADDRINUSE"
-      ? `端口 ${port} 已被占用，可能是另一个 VS Code 窗口正在运行通知接收器。`
-      : `无法启动本地 Hook 接收器：${(error as Error).message}`;
+    if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      const receiverState = await probeReceiver(port, token);
+      if (receiverState === "compatible") {
+        receiverStandbyPort = port;
+        output?.info(`端口 ${port} 由另一个 VS Code 窗口接收；本窗口进入自动接管待命。`);
+      } else {
+        receiverConflictPort = port;
+        output?.warn(`端口 ${port} 被不兼容的进程或其他 VS Code Profile 占用。`);
+      }
+      startReceiverTakeoverMonitor(context, port, token);
+      await refreshStatusBar(context);
+      return;
+    }
+    const message = `无法启动本地 Hook 接收器：${(error as Error).message}`;
     output?.warn(message);
   }
   await refreshStatusBar(context);
+}
+
+type ReceiverProbe = "compatible" | "occupied" | "unavailable";
+
+async function probeReceiver(port: number, token: string): Promise<ReceiverProbe> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      headers: { "X-Feishu-Agent-Token": token },
+      signal: AbortSignal.timeout(1_500)
+    });
+    if (!response.ok) {
+      return "occupied";
+    }
+    const body = await response.json() as { status?: unknown; service?: unknown };
+    return body.status === "ok" && body.service === "feishu-agent-notifier"
+      ? "compatible"
+      : "occupied";
+  } catch {
+    return "unavailable";
+  }
+}
+
+function startReceiverTakeoverMonitor(
+  context: vscode.ExtensionContext,
+  port: number,
+  token: string
+): void {
+  stopReceiverTakeoverMonitor();
+  const timer = setInterval(() => {
+    if (receiverProbeRunning) {
+      return;
+    }
+    receiverProbeRunning = true;
+    void probeReceiver(port, token).then(async (state) => {
+      if (receiverTakeoverTimer !== timer) {
+        return;
+      }
+      if (state === "unavailable") {
+        stopReceiverTakeoverMonitor();
+        output?.info(`端口 ${port} 已释放，本窗口正在接管通知接收器。`);
+        await restartServer(context);
+        return;
+      }
+      const standby = state === "compatible" ? port : undefined;
+      const conflict = state === "occupied" ? port : undefined;
+      if (standby !== receiverStandbyPort || conflict !== receiverConflictPort) {
+        receiverStandbyPort = standby;
+        receiverConflictPort = conflict;
+        await refreshStatusBar(context);
+      }
+    }).catch((error) => {
+      output?.warn(`接收器接管检查失败：${(error as Error).message}`);
+    }).finally(() => {
+      receiverProbeRunning = false;
+    });
+  }, 5_000);
+  receiverTakeoverTimer = timer;
+  timer.unref();
+}
+
+function stopReceiverTakeoverMonitor(): void {
+  if (receiverTakeoverTimer) {
+    clearInterval(receiverTakeoverTimer);
+    receiverTakeoverTimer = undefined;
+  }
+}
+
+function logAgentCapabilities(): void {
+  const codex = agentCapabilities.codexVersion
+    ? `${agentCapabilities.codexVersion}，Stop Hook ${agentCapabilities.codexStopHook === true ? "可用" : agentCapabilities.codexStopHook === false ? "未启用" : "未知"}`
+    : "未检测到";
+  const claude = agentCapabilities.claudeVersion
+    ? `${agentCapabilities.claudeVersion}，MessageDisplay ${agentCapabilities.claudeMessageDisplay === true ? "可用" : agentCapabilities.claudeMessageDisplay === false ? "不可用" : "未知"}`
+    : "未检测到";
+  output?.info(`Agent 能力：Codex ${codex}；Claude Code ${claude}。`);
 }
 
 function enqueueEvent(
@@ -203,9 +313,18 @@ function enqueueEvent(
   event: AgentEvent,
   queueOnFailure = true
 ): Promise<void> {
-  if (isWorkspacePaused(context) && eventBelongsToWorkspace(event.cwd, workspaceRoots())) {
+  return enqueueEventAsync(context, sender, event, queueOnFailure);
+}
+
+async function enqueueEventAsync(
+  context: vscode.ExtensionContext,
+  sender: FeishuSender,
+  event: AgentEvent,
+  queueOnFailure: boolean
+): Promise<void> {
+  if (eventIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), event.cwd)) {
     output?.info(`当前工作区已暂停，跳过 ${event.source}/${event.project} 通知。`);
-    return Promise.resolve();
+    return;
   }
   const key = eventDeduplicationKey(event);
   let messageKey: string | undefined;
@@ -323,18 +442,21 @@ async function installHookFiles(context: vscode.ExtensionContext): Promise<void>
   try {
     await deployHelper(context);
     const token = await getOrCreateHookToken(context);
+    await writeHookTokenFile(context, token);
     const helperPath = helperDestination(context);
+    const tokenFilePath = hookTokenDestination(context);
     const port = getSetting<number>("port", 37561);
-    const result = await installHooks({ helperPath, port, token });
+    const result = await installHooks({ helperPath, tokenFilePath, port });
     await restartServer(context);
     output?.info(`Codex notify: ${result.codexPath}`);
+    output?.info(`Codex Stop Hook: ${result.codexHooksPath}`);
     output?.info(`Claude hooks: ${result.claudePath}`);
     const detail = [
       result.codexChanged ? "Codex 已更新" : "Codex 无变化",
       result.claudeChanged ? "Claude Code 已更新" : "Claude Code 无变化"
     ].join("；");
     await vscode.window.showInformationMessage(
-      `通知接入安装完成：${detail}。Claude Code 实时消息使用 MessageDisplay；Codex 使用 notify，无需 /hooks 审核。`
+      `通知接入安装完成：${detail}。Codex 已配置官方 Stop Hook 和 notify 回退；首次使用 Stop Hook 请在 Codex 中运行 /hooks 完成信任。`
     );
   } catch (error) {
     await showOperationError("安装 Hooks 失败", error);
@@ -535,6 +657,19 @@ function helperDestination(context: vscode.ExtensionContext): string {
   return path.join(context.globalStorageUri.fsPath, "feishu-agent-notifier-hook.cjs");
 }
 
+function hookTokenDestination(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "receiver-token");
+}
+
+async function writeHookTokenFile(context: vscode.ExtensionContext, token: string): Promise<void> {
+  const destination = hookTokenDestination(context);
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.writeFile(destination, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") {
+    await fs.chmod(destination, 0o600);
+  }
+}
+
 async function getOrCreateHookToken(context: vscode.ExtensionContext): Promise<string> {
   const existing = await context.secrets.get(SECRET_HOOK_TOKEN);
   if (existing) {
@@ -558,6 +693,8 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
   let configurationOk = false;
   let hooksOk: boolean | undefined;
   let codexHookOk: boolean | undefined;
+  let codexNotifyOk: boolean | undefined;
+  let codexStopHookOk: boolean | undefined;
   let claudeHookOk: boolean | undefined;
 
   if (enabled) {
@@ -570,6 +707,8 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
     try {
       const hooks = await inspectHooks();
       codexHookOk = hooks.codexInstalled;
+      codexNotifyOk = hooks.codexNotifyInstalled;
+      codexStopHookOk = hooks.codexStopInstalled;
       claudeHookOk = hooks.claudeStopInstalled
         && hooks.claudeStopFailureInstalled
         && (deliveryTiming === "completion" || hooks.claudeMessageDisplayInstalled);
@@ -585,8 +724,10 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
   statusSnapshot = {
     initializing: false,
     enabled,
-    workspacePaused: isWorkspacePaused(context),
-    receiverPort: hookServer?.port,
+    workspacePaused: await isWorkspacePaused(),
+    receiverPort: hookServer?.port ?? receiverStandbyPort,
+    receiverStandby: Boolean(receiverStandbyPort),
+    receiverConflict: Boolean(receiverConflictPort),
     configurationOk,
     hooksOk,
     deliveryTiming,
@@ -594,7 +735,13 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
     pendingCount,
     activeDeliveries,
     codexHookOk,
+    codexNotifyOk,
+    codexStopHookOk,
+    codexVersion: agentCapabilities.codexVersion,
+    codexStopHookSupported: agentCapabilities.codexStopHook,
     claudeHookOk,
+    claudeVersion: agentCapabilities.claudeVersion,
+    claudeMessageDisplaySupported: agentCapabilities.claudeMessageDisplay,
     claudeSource: claudeRealtimeSource,
     lastDeliverySuccess,
     lastDeliveryError
@@ -642,7 +789,7 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
   const items: Array<StatusActionItem | vscode.QuickPickItem> = [];
   if (workspaceRoots().length > 0) {
     items.push({
-      label: isWorkspacePaused(context) ? "$(play) 恢复当前工作区通知" : "$(debug-pause) 暂停当前工作区通知",
+      label: statusSnapshot.workspacePaused ? "$(play) 恢复当前工作区通知" : "$(debug-pause) 暂停当前工作区通知",
       description: "只影响当前 VS Code 工作区",
       action: "pause"
     });
@@ -696,8 +843,9 @@ async function toggleWorkspacePause(context: vscode.ExtensionContext): Promise<v
     await vscode.window.showWarningMessage("请先打开一个文件夹或工作区，再暂停项目通知。");
     return;
   }
-  const paused = !isWorkspacePaused(context);
-  await context.workspaceState.update(WORKSPACE_PAUSED_KEY, paused);
+  const paused = !await isWorkspacePaused();
+  await setWorkspacePaused(workspacePauseFile(), workspaceRoots(), paused);
+  await context.workspaceState.update(WORKSPACE_PAUSED_KEY, undefined);
   output?.info(`当前工作区通知已${paused ? "暂停" : "恢复"}。`);
   await refreshStatusBar(context);
   await vscode.window.showInformationMessage(`当前工作区的飞书 Agent 通知已${paused ? "暂停" : "恢复"}。`);
@@ -712,18 +860,22 @@ async function retryPendingEvents(context: vscode.ExtensionContext, userInitiate
   }
   if (!hookServer?.port) {
     if (userInitiated) {
-      await vscode.window.showWarningMessage("本地通知接收器未运行，暂时无法重试。请先运行自检。 ");
+      const message = receiverStandbyPort
+        ? "待处理队列由接收器所有者窗口管理；请在状态显示“本窗口接收”的窗口中重试。"
+        : "本地通知接收器未运行，暂时无法重试。请先运行自检。";
+      await vscode.window.showWarningMessage(message);
     }
     return;
   }
 
   const sender = new FeishuSender();
   pendingDrain = (async () => {
+    const pausedRoots = await readPausedWorkspaceRoots(workspacePauseFile());
     const result = await drainPendingEvents(
       pendingDirectory(),
       async (event) => enqueueEvent(context, sender, event, false),
       (filePath, error) => output?.warn(`已隔离无效待处理文件 ${filePath}：${error.message}`),
-      (event) => isWorkspacePaused(context) && eventBelongsToWorkspace(event.cwd, workspaceRoots())
+      (event) => eventIsPaused(pausedRoots, event.cwd)
     );
     if (result.delivered > 0) {
       output?.info(`已补投 ${result.delivered} 条待处理 Agent 通知。`);
@@ -766,6 +918,8 @@ async function clearPendingEvents(context: vscode.ExtensionContext): Promise<voi
 }
 
 async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
+  agentCapabilities = await detectAgentCapabilities();
+  logAgentCapabilities();
   const checks: string[] = [];
   checks.push(checkLine("扩展已启用", getSetting<boolean>("enabled", true)));
   checks.push(checkLine("消息投递时机", true,
@@ -781,9 +935,13 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
           ? "MessageDisplay 等待首个事件，transcript 兼容待命"
           : "transcript 兼容层"));
   }
-  checks.push(checkLine("本地接收器", Boolean(hookServer?.port), hookServer?.port
-    ? `127.0.0.1:${hookServer.port}`
-    : "未运行或端口被其他窗口占用"));
+  checks.push(checkLine("本地接收器", Boolean(hookServer?.port || receiverStandbyPort), hookServer?.port
+    ? `127.0.0.1:${hookServer.port}，本窗口接收`
+    : receiverStandbyPort
+      ? `127.0.0.1:${receiverStandbyPort}，其他窗口接收，本窗口自动接管待命`
+      : receiverConflictPort
+        ? `端口 ${receiverConflictPort} 被不兼容进程或其他 Profile 占用`
+        : "未运行"));
 
   try {
     validateConfig(await loadNotifierConfig(context));
@@ -794,7 +952,13 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
 
   try {
     const hooks = await inspectHooks();
-    checks.push(checkLine("Codex CLI notify", hooks.codexInstalled, hooks.codexPath));
+    checks.push(checkLine("Codex 版本", Boolean(agentCapabilities.codexVersion),
+      agentCapabilities.codexVersion ?? "未检测到"));
+    checks.push(checkLine("Codex 官方 Stop Hook", hooks.codexStopInstalled,
+      `${hooks.codexHooksPath}${agentCapabilities.codexStopHook === false ? "，当前版本未启用 Hooks" : ""}`));
+    checks.push(checkLine("Codex notify 回退", hooks.codexNotifyInstalled, hooks.codexPath));
+    checks.push(checkLine("Claude Code 版本", Boolean(agentCapabilities.claudeVersion),
+      agentCapabilities.claudeVersion ?? "未检测到"));
     checks.push(checkLine("Claude Code Stop", hooks.claudeStopInstalled, hooks.claudePath));
     checks.push(checkLine("Claude Code StopFailure", hooks.claudeStopFailureInstalled, hooks.claudePath));
     checks.push(checkLine("Claude Code MessageDisplay", hooks.claudeMessageDisplayInstalled, hooks.claudePath));
@@ -860,12 +1024,23 @@ function formatDiagnosticTime(value: string): string {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
-function isWorkspacePaused(context: vscode.ExtensionContext): boolean {
-  return context.workspaceState.get<boolean>(WORKSPACE_PAUSED_KEY, false);
+async function isWorkspacePaused(): Promise<boolean> {
+  return workspaceIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), workspaceRoots());
 }
 
 function workspaceRoots(): string[] {
   return vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
+}
+
+function workspacePauseFile(): string {
+  return path.join(extensionStoragePath, "paused-workspaces.json");
+}
+
+async function migrateWorkspacePause(context: vscode.ExtensionContext): Promise<void> {
+  if (context.workspaceState.get<boolean>(WORKSPACE_PAUSED_KEY, false) && workspaceRoots().length > 0) {
+    await setWorkspacePaused(workspacePauseFile(), workspaceRoots(), true);
+    await context.workspaceState.update(WORKSPACE_PAUSED_KEY, undefined);
+  }
 }
 
 function escapeMarkdown(value: string): string {

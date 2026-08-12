@@ -188,7 +188,7 @@ function parsePendingEvent(value: Record<string, unknown>): AgentEvent {
       source: value.source,
       eventName: value.eventName,
       status: value.status,
-      origin: value.origin === "transcript" || value.origin === "hook" || value.origin === "display-hook"
+      origin: value.origin === "transcript" || value.origin === "hook" || value.origin === "display-hook" || value.origin === "notify"
         ? value.origin
         : undefined,
       sessionId: typeof value.sessionId === "string" ? value.sessionId : "",

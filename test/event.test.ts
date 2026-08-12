@@ -20,9 +20,22 @@ test("normalizes a Codex Stop event without truncating the final message", () =>
   });
 
   assert.equal(event.source, "codex");
+  assert.equal(event.origin, "hook");
   assert.equal(event.project, "project-a");
   assert.equal(event.message, fullMessage);
   assert.equal(event.status, "completed");
+});
+
+test("distinguishes legacy Codex notify from official Stop hooks", () => {
+  const event = normalizeAgentEvent({
+    __notifier_source: "codex",
+    type: "agent-turn-complete",
+    "thread-id": "session-1",
+    "turn-id": "turn-1",
+    "last-assistant-message": "相同最终回复"
+  });
+  assert.equal(event.origin, "notify");
+  assert.equal(isCrossOriginDuplicate("hook", event.origin), true);
 });
 
 test("normalizes Claude Code StopFailure", () => {
