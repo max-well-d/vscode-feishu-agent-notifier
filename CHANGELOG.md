@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Remove obsolete local VSIX build artifacts from the development workspace.
+- Make credential-migration documentation version-independent.
+- Update official GitHub Actions from v4 to v7.
+
 ## 0.8.0
 
 - Prefer Claude Code's official `MessageDisplay` Hook for realtime assistant text.
