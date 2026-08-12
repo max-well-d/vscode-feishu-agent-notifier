@@ -18,6 +18,14 @@ export interface HookInstallResult {
   claudeChanged: boolean;
 }
 
+export interface HookInspectionResult {
+  codexPath: string;
+  claudePath: string;
+  codexInstalled: boolean;
+  claudeStopInstalled: boolean;
+  claudeStopFailureInstalled: boolean;
+}
+
 interface CodexNotifyMergeResult {
   text: string;
   changed: boolean;
@@ -93,6 +101,23 @@ export async function uninstallHooks(homeDirectory?: string): Promise<HookInstal
   };
 }
 
+export async function inspectHooks(homeDirectory?: string): Promise<HookInspectionResult> {
+  const home = homeDirectory ?? os.homedir();
+  const codexPath = path.join(home, ".codex", "config.toml");
+  const claudePath = path.join(home, ".claude", "settings.json");
+  const codexNotify = findRootNotifyAssignment(await readText(codexPath));
+  const claudeDocument = await readJsonObject(claudePath);
+  const hooks = isObject(claudeDocument.hooks) ? claudeDocument.hooks : {};
+
+  return {
+    codexPath,
+    claudePath,
+    codexInstalled: codexNotify?.text.includes(NOTIFIER_MARKER) ?? false,
+    claudeStopInstalled: eventHasNotifier(hooks.Stop),
+    claudeStopFailureInstalled: eventHasNotifier(hooks.StopFailure)
+  };
+}
+
 export function mergeCodexNotify(configText: string, options: InstallHooksOptions): CodexNotifyMergeResult {
   const command = [
     "node",
@@ -139,6 +164,7 @@ export function removeCodexNotify(
 }
 
 export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOptions): boolean {
+  const before = JSON.stringify(document);
   const hooks = ensureHooks(document);
   for (const eventName of ["Stop", "StopFailure"]) {
     const groups = ensureEventGroups(hooks, eventName);
@@ -159,7 +185,7 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
       }]
     });
   }
-  return true;
+  return JSON.stringify(document) !== before;
 }
 
 export function removeNotifierHooks(document: JsonObject): boolean {
@@ -219,6 +245,10 @@ function groupContainsNotifier(group: unknown): boolean {
     const args = Array.isArray(handler.args) ? handler.args.join(" ") : "";
     return `${command} ${commandWindows} ${args}`.includes(NOTIFIER_MARKER);
   });
+}
+
+function eventHasNotifier(value: unknown): boolean {
+  return Array.isArray(value) && value.some((group) => groupContainsNotifier(group));
 }
 
 async function readJsonObject(filePath: string): Promise<JsonObject> {

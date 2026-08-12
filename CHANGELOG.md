@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+- Preserve up to 100 complete Agent events while VS Code is offline and deliver them after the extension starts again.
+- Retry transient Feishu network, rate-limit, and server failures with bounded exponential backoff.
+- Rate-limit repeated delivery-error popups while retaining every error in the output log.
+- Add redacted diagnostics for receiver, Feishu configuration, Codex/Claude hooks, pending events, and recent delivery state.
+- Add commands to repair hooks and retry pending events, plus a four-step VS Code onboarding walkthrough.
+- Add a confirmed command for permanently clearing sensitive pending-event files.
+- Migrate legacy plaintext Feishu credentials into VS Code SecretStorage and remove secret fields from the Settings UI.
+- Declare local UI extension behavior and trusted/untrusted and virtual workspace capabilities.
+- Add repository, support, security, contribution, and product-readiness documentation.
+- Add Windows/Linux CI, VSIX content checks, and tag-based GitHub Release automation.
+
 ## 0.5.0
 
 - Add VS Code local completion and failure notifications for Codex and Claude Code.

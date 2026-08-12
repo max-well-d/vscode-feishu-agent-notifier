@@ -26,7 +26,9 @@ const webhookConfig: NotifierConfig = {
   messageFormat: "card",
   includeMetadata: false,
   maxChunkCharacters: 12000,
-  notifyOnFailure: true
+  notifyOnFailure: true,
+  deliveryMaxAttempts: 3,
+  retryBaseDelayMs: 10
 };
 
 test("creates deterministic Feishu webhook signatures", () => {
@@ -114,4 +116,29 @@ test("rejects non-Feishu webhook hosts", () => {
     () => validateConfig({ ...webhookConfig, webhookUrl: "https://example.com/hook" }),
     /open\.feishu\.cn/
   );
+});
+
+test("retries transient Feishu responses before succeeding", async () => {
+  let attempts = 0;
+  const fakeFetch = (async () => {
+    attempts += 1;
+    if (attempts < 3) {
+      return new Response(JSON.stringify({ code: 1, msg: "busy" }), { status: 503 });
+    }
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), { status: 200 });
+  }) as typeof fetch;
+
+  await new FeishuSender(fakeFetch).sendEvent(event, webhookConfig);
+  assert.equal(attempts, 3);
+});
+
+test("does not retry permanent Feishu errors", async () => {
+  let attempts = 0;
+  const fakeFetch = (async () => {
+    attempts += 1;
+    return new Response(JSON.stringify({ code: 19001, msg: "invalid webhook" }), { status: 400 });
+  }) as typeof fetch;
+
+  await assert.rejects(() => new FeishuSender(fakeFetch).sendEvent(event, webhookConfig), /飞书发送失败/);
+  assert.equal(attempts, 1);
 });

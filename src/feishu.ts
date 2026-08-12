@@ -47,7 +47,7 @@ export class FeishuSender {
           total: chunks.length
         });
       if (config.deliveryMode === "webhook") {
-        await this.sendWebhook(chunk, card, config.webhookUrl, config.webhookSecret);
+        await this.sendWebhook(chunk, card, config);
       } else {
         await this.sendApp(chunk, card, config);
       }
@@ -61,34 +61,32 @@ export class FeishuSender {
   private async sendWebhook(
     text: string,
     card: FeishuCard | undefined,
-    webhookUrl: string,
-    secret: string
+    config: NotifierConfig
   ): Promise<void> {
     const payload: Record<string, unknown> = card
       ? { msg_type: "interactive", card }
       : { msg_type: "text", content: { text } };
 
-    if (secret) {
+    if (config.webhookSecret) {
       const timestamp = Math.floor(Date.now() / 1000).toString();
       payload.timestamp = timestamp;
-      payload.sign = createWebhookSignature(timestamp, secret);
+      payload.sign = createWebhookSignature(timestamp, config.webhookSecret);
     }
 
-    const response = await this.fetchImpl(webhookUrl, {
+    const response = await this.fetchWithRetry(config.webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000)
-    });
+      body: JSON.stringify(payload)
+    }, config);
     await ensureFeishuSuccess(response);
   }
 
   private async sendApp(text: string, card: FeishuCard | undefined, config: NotifierConfig): Promise<void> {
-    const token = await this.getTenantAccessToken(config.appId, config.appSecret);
+    const token = await this.getTenantAccessToken(config);
     const endpoint = new URL("https://open.feishu.cn/open-apis/im/v1/messages");
     endpoint.searchParams.set("receive_id_type", config.receiveIdType);
 
-    const response = await this.fetchImpl(endpoint, {
+    const response = await this.fetchWithRetry(endpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -98,28 +96,27 @@ export class FeishuSender {
         receive_id: config.receiveId,
         msg_type: card ? "interactive" : "text",
         content: JSON.stringify(card ?? { text })
-      }),
-      signal: AbortSignal.timeout(15_000)
-    });
+      })
+    }, config);
     await ensureFeishuSuccess(response);
   }
 
-  private async getTenantAccessToken(appId: string, appSecret: string): Promise<string> {
-    const cacheKey = crypto.createHash("sha256").update(`${appId}\0${appSecret}`).digest("hex");
+  private async getTenantAccessToken(config: NotifierConfig): Promise<string> {
+    const cacheKey = crypto.createHash("sha256").update(`${config.appId}\0${config.appSecret}`).digest("hex");
     if (this.tokenCache
       && this.tokenCache.cacheKey === cacheKey
       && this.tokenCache.expiresAt > Date.now() + 60_000) {
       return this.tokenCache.token;
     }
 
-    const response = await this.fetchImpl(
+    const response = await this.fetchWithRetry(
       "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/",
       {
         method: "POST",
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-        signal: AbortSignal.timeout(15_000)
-      }
+        body: JSON.stringify({ app_id: config.appId, app_secret: config.appSecret })
+      },
+      config
     );
     const result = await parseFeishuResponse(response);
     if (!response.ok || result.code !== 0 || !result.tenant_access_token) {
@@ -133,6 +130,38 @@ export class FeishuSender {
       cacheKey
     };
     return result.tenant_access_token;
+  }
+
+  private async fetchWithRetry(
+    input: string | URL,
+    init: RequestInit,
+    config: Pick<NotifierConfig, "deliveryMaxAttempts" | "retryBaseDelayMs">
+  ): Promise<Response> {
+    const attempts = Math.min(5, Math.max(1, Math.trunc(config.deliveryMaxAttempts || 1)));
+    const baseDelayMs = Math.min(5_000, Math.max(10, Math.trunc(config.retryBaseDelayMs || 500)));
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const response = await this.fetchImpl(input, {
+          ...init,
+          signal: AbortSignal.timeout(15_000)
+        });
+        if (!isTransientStatus(response.status) || attempt === attempts) {
+          return response;
+        }
+        await response.arrayBuffer();
+        await delay(retryDelayMilliseconds(response, attempt, baseDelayMs));
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableNetworkError(error) || attempt === attempts) {
+          throw error;
+        }
+        await delay(exponentialDelay(attempt, baseDelayMs));
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error("飞书请求重试失败");
   }
 }
 
@@ -192,4 +221,32 @@ function feishuError(prefix: string, status: number, result: FeishuResponse): st
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  return error instanceof TypeError
+    || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name));
+}
+
+function retryDelayMilliseconds(response: Response, attempt: number, baseDelayMs: number): number {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(30_000, seconds * 1000);
+    }
+    const date = Date.parse(retryAfter);
+    if (Number.isFinite(date)) {
+      return Math.min(30_000, Math.max(0, date - Date.now()));
+    }
+  }
+  return exponentialDelay(attempt, baseDelayMs);
+}
+
+function exponentialDelay(attempt: number, baseDelayMs: number): number {
+  return Math.min(30_000, baseDelayMs * (2 ** Math.max(0, attempt - 1)));
 }

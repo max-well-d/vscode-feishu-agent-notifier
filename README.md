@@ -20,6 +20,9 @@
 - 转发脚本只连接 `127.0.0.1` 上的 VS Code 扩展，不向局域网开放端口。
 - 可使用 VS Code SecretStorage 保存 Webhook、签名密钥和 App Secret。
 - 安装时保留已有配置，并创建一次性 `.feishu-agent-notifier.bak` 备份；已有 Codex `notify` 会在卸载时恢复。
+- VS Code 未运行时把事件暂存到扩展私有目录，下次启动自动补投，最多保留 100 条。
+- 飞书限流、网络错误和服务端错误会按指数退避自动重试。
+- 提供首次使用 Walkthrough、完整自检、Hook 修复、待处理队列重试和脱敏诊断报告。
 
 ## 本地开发与安装
 
@@ -28,14 +31,14 @@ cd vscode-feishu-agent-notifier
 npm install
 npm test
 npm run package
-code --install-extension .\feishu-agent-notifier-0.5.0.vsix
+code --install-extension .\feishu-agent-notifier-0.6.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
 
 ## 配置
 
-安装扩展后运行：
+安装扩展后，打开 VS Code 的“欢迎使用”页面并选择“配置 Feishu Agent Notifier”，或依次运行：
 
 1. `飞书 Agent 通知：打开设置`
 2. 选择 `webhook` 或 `app` 投递模式。
@@ -43,10 +46,11 @@ code --install-extension .\feishu-agent-notifier-0.5.0.vsix
 4. 应用机器人模式还需在设置中填写 `Receive Id Type` 和 `Receive Id`。
 5. 运行 `飞书 Agent 通知：发送测试消息`。
 6. 运行 `飞书 Agent 通知：安装/更新 Codex 与 Claude Code 通知接入`。
+7. 运行 `飞书 Agent 通知：运行自检与修复`。
 
 本地提醒默认开启。可运行 `飞书 Agent 通知：发送本地测试提醒` 单独测试；通过 `localNotificationMode` 选择 `always`、`whenUnfocused` 或 `off`。
 
-也可以直接在 VS Code 设置界面填写所有字段。需要注意，普通设置保存在 `settings.json`，敏感字段推荐通过安全保存命令写入 SecretStorage；安全存储值优先于普通设置。
+非敏感选项可直接在 VS Code 设置界面填写。Webhook、签名密钥、App ID 和 App Secret 只通过“安全保存飞书凭据”命令写入 SecretStorage；0.6.0 会把旧版本遗留的明文凭据自动迁移并清除。
 
 ### Webhook 模式
 
@@ -79,7 +83,9 @@ code --install-extension .\feishu-agent-notifier-0.5.0.vsix
 
 `watchCodexIde` 默认开启。该兼容层依赖 Codex 本地 transcript 格式；如果未来 Codex IDE 原生支持外部完成通知，可以关闭该设置。扩展只读取最终完成事件中的 `last_agent_message`，不会发送推理内容或工具调用记录。
 
-扩展或 VS Code 没有运行时，本地接收器不可用，飞书推送与 VS Code 本地提醒都不会触发；转发脚本会安全退出，Codex/Claude Code 本身不会被阻塞。
+扩展或 VS Code 没有运行时，本地接收器不可用。默认情况下，转发脚本会把完整事件写入扩展的私有 `globalStorage/pending-events` 目录，VS Code 下次启动后自动补投并显示本地提醒；Codex/Claude Code 本身不会被阻塞。可关闭 `queueWhenOffline`，关闭后离线事件会被丢弃且不会把回复正文暂存到磁盘。
+
+离线队列解决的是“不丢消息”，不是 VS Code 关闭后的实时发送。若必须在 VS Code 完全退出时仍实时推送，需要单独运行受保护的后台服务；本扩展当前不安装常驻系统服务。
 
 ## 完整内容与分片
 
@@ -96,4 +102,25 @@ code --install-extension .\feishu-agent-notifier-0.5.0.vsix
 - 启用扩展等同于授权它把 Agent 最终回复发送到飞书。
 - 建议使用专用私密群或权限最小化的自建应用。
 - 不要把 Webhook、App Secret 或生成的本地接收 Token 提交到代码仓库。
+- 离线队列可能暂存完整回复；对落盘敏感的环境请关闭 `queueWhenOffline`。
 - 本扩展不会修改项目级配置；只在用户明确执行命令后修改用户级配置。
+
+完整威胁模型与漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+
+## 自检与故障排除
+
+运行 `飞书 Agent 通知：运行自检与修复`，报告会检查：
+
+- 本地接收器和端口
+- 飞书投递配置
+- Codex CLI `notify`
+- Claude Code `Stop` / `StopFailure`
+- 离线队列和最近一次投递结果
+
+报告不会包含飞书凭据、本地接收 Token 或 Agent 回复正文。若状态栏显示警告，先运行自检，再使用“安装/修复 Hooks”或“重试待处理通知”。
+
+如需删除磁盘上尚未投递的完整回复，运行 `飞书 Agent 通知：清除待处理通知`；该操作会在确认后永久删除队列文件。
+
+## 产品成熟度
+
+当前能力、正式发布门槛以及与专业通知产品相比仍缺少的部分，持续记录在 [产品就绪审计](docs/PRODUCT_AUDIT.md)。主要后续方向是 Marketplace 品牌资产、Extension Host 集成测试、远程环境支持、内容策略与可查询投递历史。

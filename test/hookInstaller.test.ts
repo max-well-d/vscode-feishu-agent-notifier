@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
+  inspectHooks,
+  installHooks,
   mergeClaudeHooks,
   mergeCodexNotify,
   NOTIFIER_MARKER,
   removeCodexNotify,
-  removeNotifierHooks
+  removeNotifierHooks,
+  uninstallHooks
 } from "../src/hookInstaller";
 
 const options = {
@@ -57,7 +63,7 @@ test("updates its own Codex notify idempotently without losing saved state", () 
 test("merges Claude Stop and StopFailure hooks idempotently", () => {
   const document: Record<string, any> = { hooks: {} };
   mergeClaudeHooks(document, options);
-  mergeClaudeHooks(document, options);
+  assert.equal(mergeClaudeHooks(document, options), false);
 
   assert.equal(document.hooks.Stop.length, 1);
   assert.equal(document.hooks.StopFailure.length, 1);
@@ -73,4 +79,26 @@ test("removes only notifier hook groups", () => {
   assert.equal(document.hooks.Stop.length, 1);
   assert.equal(document.hooks.Stop[0].hooks[0].command, "keep-me");
   assert.equal(document.hooks.StopFailure, undefined);
+});
+
+test("installs inspectable hooks and restores unrelated Codex notify", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-hooks-test-"));
+  t.after(async () => fs.rm(home, { recursive: true, force: true }));
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.writeFile(
+    path.join(home, ".codex", "config.toml"),
+    'notify = ["python", "old-notify.py"]\n[features]\nexample = true\n',
+    "utf8"
+  );
+
+  await installHooks({ ...options, homeDirectory: home });
+  const inspection = await inspectHooks(home);
+  assert.equal(inspection.codexInstalled, true);
+  assert.equal(inspection.claudeStopInstalled, true);
+  assert.equal(inspection.claudeStopFailureInstalled, true);
+
+  await uninstallHooks(home);
+  const restored = await fs.readFile(path.join(home, ".codex", "config.toml"), "utf8");
+  assert.match(restored, /notify = \["python", "old-notify\.py"\]/);
+  assert.doesNotMatch(restored, new RegExp(NOTIFIER_MARKER));
 });

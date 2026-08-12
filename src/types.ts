@@ -26,6 +26,8 @@ export interface NotifierConfig {
   includeMetadata: boolean;
   maxChunkCharacters: number;
   notifyOnFailure: boolean;
+  deliveryMaxAttempts: number;
+  retryBaseDelayMs: number;
 }
 
 export interface HookCommand {
