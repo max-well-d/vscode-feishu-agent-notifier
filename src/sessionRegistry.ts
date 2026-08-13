@@ -67,7 +67,10 @@ export class SessionRegistry {
   public recordEvent(event: AgentEvent): Promise<AgentSession> {
     return this.mutate((document) => {
       const key = agentSessionKey(event.source, event.sessionId);
-      const previous = document.sessions[key];
+      const channelPrevious = event.channelId
+        ? Object.entries(document.sessions).find(([, value]) => value.channelId === event.channelId)
+        : undefined;
+      const previous = document.sessions[key] ?? channelPrevious?.[1];
       const session: AgentSession = {
         source: event.source,
         sessionId: event.sessionId,
@@ -80,11 +83,25 @@ export class SessionRegistry {
         ownership: previous?.ownership ?? "external",
         completionEvidence: "authoritative",
         managedBackend: previous?.managedBackend,
+        channelId: event.channelId || previous?.channelId,
         lastCompletedTurnId: terminalTurnId(event) || previous?.lastCompletedTurnId,
         forkedFromSessionId: previous?.forkedFromSessionId,
         forkedFromTurnId: previous?.forkedFromTurnId
       };
       document.sessions[key] = session;
+      if (channelPrevious && channelPrevious[0] !== key) {
+        delete document.sessions[channelPrevious[0]];
+        for (const route of Object.values(document.messages)) {
+          if (route.sessionKey === channelPrevious[0]) {
+            route.sessionKey = key;
+          }
+        }
+        for (const selection of Object.values(document.chatSelections)) {
+          if (selection.sessionKey === channelPrevious[0]) {
+            selection.sessionKey = key;
+          }
+        }
+      }
       return session;
     });
   }
@@ -124,6 +141,7 @@ export class SessionRegistry {
             ownership: previous.ownership ?? session.ownership ?? "external",
             completionEvidence: previous.completionEvidence ?? session.completionEvidence ?? "discovered",
             managedBackend: previous.managedBackend ?? session.managedBackend,
+            channelId: previous.channelId ?? session.channelId,
             lastCompletedTurnId: previous.lastCompletedTurnId ?? session.lastCompletedTurnId,
             forkedFromSessionId: previous.forkedFromSessionId ?? session.forkedFromSessionId,
             forkedFromTurnId: previous.forkedFromTurnId ?? session.forkedFromTurnId
@@ -151,6 +169,7 @@ export class SessionRegistry {
         ownership: previous?.ownership ?? "external",
         completionEvidence: "authoritative",
         managedBackend: previous?.managedBackend,
+        channelId: event.channelId || previous?.channelId,
         lastCompletedTurnId: terminalTurnId(event) || previous?.lastCompletedTurnId,
         forkedFromSessionId: previous?.forkedFromSessionId,
         forkedFromTurnId: previous?.forkedFromTurnId
@@ -278,7 +297,11 @@ export class SessionRegistry {
     actualTurnId?: string
   ): Promise<AgentSession> {
     return this.mutate((document) => {
-      const oldKey = agentSessionKey(original.source, original.sessionId);
+      const requestedKey = agentSessionKey(original.source, original.sessionId);
+      const channelExisting = original.channelId
+        ? Object.entries(document.sessions).find(([, value]) => value.channelId === original.channelId)
+        : undefined;
+      const oldKey = document.sessions[requestedKey] ? requestedKey : channelExisting?.[0] ?? requestedKey;
       const previous = document.sessions[oldKey] ?? original;
       const updated: AgentSession = {
         ...previous,
@@ -288,6 +311,7 @@ export class SessionRegistry {
         ownership: previous.ownership ?? original.ownership ?? "external",
         completionEvidence: "authoritative",
         managedBackend: previous.managedBackend ?? original.managedBackend,
+        channelId: previous.channelId ?? original.channelId,
         lastCompletedTurnId: actualTurnId || previous.lastCompletedTurnId
       };
       const newKey = agentSessionKey(updated.source, updated.sessionId);

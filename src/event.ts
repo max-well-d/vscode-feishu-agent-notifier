@@ -33,6 +33,7 @@ export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
     eventName,
     status: failed ? "failed" : "completed",
     origin: codexNotify ? "notify" : "hook",
+    channelId: stringValue(input.__notifier_channel_id) || undefined,
     sessionId: stringValue(input["thread-id"]) || stringValue(input.session_id),
     turnId: stringValue(input["turn-id"]) || stringValue(input.turn_id) || stringValue(input.prompt_id),
     cwd,
@@ -93,6 +94,7 @@ export function formatEventMessage(event: AgentEvent, includeMetadata: boolean):
     `Session ID：${event.sessionId || "未知"}`,
     `项目：${event.project}`,
     `状态：${status}`,
+    `输入来源：${event.inputOrigin === "feishu" ? "飞书远程" : event.inputOrigin === "local" ? "VS Code 本地" : "未标记"}`,
     `时间：${new Date(event.occurredAt).toLocaleString("zh-CN", { hour12: false })}`
   ];
 

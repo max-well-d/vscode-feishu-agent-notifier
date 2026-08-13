@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Fix a critical single-writer regression: quoted replies to externally owned Codex sessions now always create a persistent fork at the exact completed turn and never resume or retain the original thread in the notifier App Server.
+- Reject external Codex threads at the reply runner, Broker HTTP boundary, and App Server client boundary before a process can claim the source session.
+- Fix Broker process-test teardown so an already-exited child cannot leave the test runner and its helper processes orphaned.
+- Include the underlying network error code and cause in Feishu delivery logs instead of reporting only `fetch failed`.
+- Move managed Codex App Server ownership into an authenticated loopback Session Broker that survives Extension Host reloads.
+- Add durable handoff state, local-input leases, explicit local-priority/remote-takeover status, input-origin labels, and a completion inbox that never fabricates a running turn after restart.
+- Add a VS Code managed Codex panel so local and Feishu prompts share one Broker-owned thread.
+- Start original Claude Code CLI sessions with the official Channel protocol for same-session Feishu injection, reply tools, permission relay, and real-session-ID migration.
+- Relay Codex and Claude Code approval requests to both local UI and Feishu; the first valid response wins.
+- Add real-process Broker reconnect and Codex App Server integration tests; the suite now contains 105 tests when the optional real Codex smoke test is enabled.
+
 ## 0.14.2
 
 - Fix quoted replies to an external Claude Code session waiting indefinitely while the same session remains open in the VS Code Claude process.

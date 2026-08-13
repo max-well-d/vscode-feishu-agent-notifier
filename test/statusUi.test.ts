@@ -65,6 +65,21 @@ test("shows bidirectional readiness and inbound failures", () => {
   assert.match(connected.text, /双向/);
   assert.match(connected.details.join("\n"), /只读规划，已连接，运行 0 \/ 排队 1/);
   assert.match(connected.details.join("\n"), /Codex 托管已就绪/);
+  const broker = buildStatusPresentation({
+    ...ready,
+    deliveryMode: "app",
+    remoteExecutionPolicy: "planOnly",
+    inboundState: "connected",
+    remoteActive: 0,
+    remotePending: 1,
+    codexManagedState: "ready",
+    brokerState: "ready",
+    brokerActiveTurns: 1,
+    localPrioritySessions: 1,
+    remoteOwnedSessions: 2,
+    pendingApprovals: 1
+  });
+  assert.match(broker.details.join("\n"), /Session Broker：已连接，turn 1，本地优先 1，远程接管 2，待审批 1/);
   const failed = buildStatusPresentation({
     ...ready,
     deliveryMode: "app",

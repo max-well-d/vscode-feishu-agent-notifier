@@ -18,7 +18,15 @@ export interface ReplyRouterOptions {
     policy: RemoteExecutionPolicy,
     name: string
   ) => Promise<AgentSession>;
+  createManagedClaudeSession?: (
+    cwd: string,
+    project: string,
+    policy: RemoteExecutionPolicy,
+    name: string
+  ) => Promise<AgentSession>;
   steerManagedCodex?: (session: AgentSession, prompt: string) => Promise<string>;
+  describeHandoff?: (session: AgentSession) => Promise<"本地优先" | "远程接管" | undefined>;
+  resolveApproval?: (approvalId: string, decision: "accept" | "decline") => Promise<void>;
 }
 
 export class ReplyRouter {
@@ -135,19 +143,33 @@ export class ReplyRouter {
             return;
           }
         } else {
-          session = {
-            source: "claude-code",
-            sessionId: `new:${crypto.randomUUID()}`,
-            cwd: workspace.cwd,
-            project: workspace.project,
-            lastSeenAt: new Date().toISOString(),
-            status: "completed",
-            name: remoteSessionName(prompt, workspace.project),
-            ownership: "managed",
-            completionEvidence: "authoritative",
-            managedBackend: "claude-cli"
-          };
-          await this.options.registry.recordManagedSession(session);
+          if (this.options.createManagedClaudeSession) {
+            try {
+              session = await this.options.createManagedClaudeSession(
+                workspace.cwd,
+                workspace.project,
+                policy,
+                remoteSessionName(prompt, workspace.project)
+              );
+            } catch (error) {
+              await this.options.reply(message, `创建 Claude Channel 会话失败：${(error as Error).message}`);
+              return;
+            }
+          } else {
+            session = {
+              source: "claude-code",
+              sessionId: `new:${crypto.randomUUID()}`,
+              cwd: workspace.cwd,
+              project: workspace.project,
+              lastSeenAt: new Date().toISOString(),
+              status: "completed",
+              name: remoteSessionName(prompt, workspace.project),
+              ownership: "managed",
+              completionEvidence: "authoritative",
+              managedBackend: "claude-cli"
+            };
+            await this.options.registry.recordManagedSession(session);
+          }
         }
         await this.options.registry.selectForChat(message.chatId, session);
         await this.enqueue(message, session, prompt);
@@ -182,6 +204,21 @@ export class ReplyRouter {
       case "/cancel": {
         const count = this.options.queue.cancelForChat(message.chatId);
         await this.options.reply(message, count > 0 ? `已取消 ${count} 个运行中或排队任务。` : "当前会话没有可取消任务。 ");
+        return;
+      }
+      case "/approve":
+      case "/deny": {
+        const approvalId = rest.join(" ").trim();
+        if (!approvalId || !this.options.resolveApproval) {
+          await this.options.reply(message, `用法：${command.toLocaleLowerCase()} <审批ID>`);
+          return;
+        }
+        try {
+          await this.options.resolveApproval(approvalId, command.toLocaleLowerCase() === "/approve" ? "accept" : "decline");
+          await this.options.reply(message, `审批 ${approvalId} 已${command.toLocaleLowerCase() === "/approve" ? "允许" : "拒绝"}（飞书先响应）。`);
+        } catch (error) {
+          await this.options.reply(message, `审批未生效：${(error as Error).message}`);
+        }
         return;
       }
       default:
@@ -233,11 +270,17 @@ export class ReplyRouter {
       && ownership !== "managed"
       && session.completionEvidence === "authoritative"
       && Boolean(anchorTurnId);
+    const branchingCodex = session.source === "codex"
+      && ownership !== "managed"
+      && session.completionEvidence === "authoritative"
+      && Boolean(anchorTurnId);
     const waiting = (!branchingClaude && session.status === "progress") || result.position > 1;
+    const handoff = await this.options.describeHandoff?.(session).catch(() => undefined);
     const replyId = await this.options.reply(message,
       `${waiting ? "已排队" : "已接收"}：${formatSession(session)}\n`
       + `策略：${policy === "planOnly" ? "只读规划" : "继承本机权限"}`
-      + `\n会话：${ownership === "managed" ? "飞书托管" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : "外部完成后续写"}`
+      + `\n会话：${ownership === "managed" ? "飞书托管" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : branchingCodex ? "从外部 Codex 会话创建安全分支（原会话不被占用）" : "外部完成后续写"}`
+      + `${handoff ? `\n交接：${handoff}${handoff === "本地优先" ? "（等待本地输入或 turn 结束）" : ""}` : ""}`
       + `${waiting ? `\n队列位置：${result.position}` : ""}`
     );
     if (replyId) {
@@ -315,6 +358,8 @@ function helpText(): string {
     "- /alias <名称>：给当前会话设置别名",
     "- /status：查看连接和队列",
     "- /cancel：取消当前飞书聊天提交的任务",
+    "- /approve <审批ID>：允许待处理权限请求（与本地先答者生效）",
+    "- /deny <审批ID>：拒绝待处理权限请求",
     "- /help：显示此帮助"
   ].join("\n");
 }

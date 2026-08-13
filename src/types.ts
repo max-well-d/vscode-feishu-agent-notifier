@@ -17,6 +17,8 @@ export interface AgentEvent {
   cwd: string;
   project: string;
   sessionName?: string;
+  inputOrigin?: "local" | "feishu";
+  channelId?: string;
   message: string;
   occurredAt: string;
 }
@@ -59,7 +61,8 @@ export interface AgentSession {
   alias?: string;
   ownership?: AgentSessionOwnership;
   completionEvidence?: SessionCompletionEvidence;
-  managedBackend?: "codex-app-server" | "claude-cli";
+  managedBackend?: "codex-app-server" | "claude-cli" | "claude-channel";
+  channelId?: string;
   lastCompletedTurnId?: string;
   forkedFromSessionId?: string;
   forkedFromTurnId?: string;

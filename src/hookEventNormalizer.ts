@@ -92,6 +92,7 @@ export class HookEventNormalizer {
       status: "progress",
       eventId: messageId,
       origin: "display-hook",
+      channelId: stringValue(input.__notifier_channel_id) || undefined,
       sessionId,
       turnId,
       cwd,

@@ -12,6 +12,7 @@ export interface AgentReplyResult {
   sessionId?: string;
   turnId?: string;
   backend?: "codex-app-server" | "cli";
+  completionId?: string;
 }
 
 export interface ManagedCodexExecutor {
@@ -24,6 +25,14 @@ export interface ManagedCodexExecutor {
     session: AgentSession,
     prompt: string,
     policy: RemoteExecutionPolicy,
+    signal: AbortSignal,
+    timeoutMs: number
+  ): Promise<AgentReplyResult>;
+  runClaudeChannelTurn?(
+    session: AgentSession,
+    prompt: string,
+    chatId: string,
+    inboundMessageId: string,
     signal: AbortSignal,
     timeoutMs: number
   ): Promise<AgentReplyResult>;
@@ -94,6 +103,24 @@ export class AgentReplyRunner {
         return this.runForkFallback(job, normalizeError(error), signal);
       }
     }
+    if (job.session.source === "claude-code"
+      && job.session.ownership === "managed"
+      && job.session.managedBackend === "claude-channel") {
+      if (!this.managedCodex?.runClaudeChannelTurn) {
+        throw new Error("Claude Channel 执行器未初始化");
+      }
+      return this.managedCodex.runClaudeChannelTurn(
+        job.session,
+        job.prompt,
+        job.chatId,
+        job.inboundMessageId,
+        signal,
+        this.timeoutMs
+      );
+    }
+    if (job.session.source === "codex" && job.session.ownership !== "managed") {
+      return this.runExternalCodexBranch(job, signal);
+    }
     const allowNonGitWorkspace = job.session.source === "codex"
       && job.session.ownership === "external"
       && job.session.completionEvidence === "authoritative"
@@ -128,6 +155,34 @@ export class AgentReplyRunner {
     } catch (error) {
       return this.runForkFallback(job, normalizeError(error), signal);
     }
+  }
+
+  /**
+   * Never resume an externally owned Codex thread in this process. Codex uses
+   * single-writer thread persistence, and keeping a resumed thread loaded in a
+   * second App Server can prevent the official VS Code extension from opening
+   * that thread. A remote reply therefore always continues on a persistent,
+   * plugin-owned fork anchored to the quoted completed turn.
+   */
+  private async runExternalCodexBranch(
+    job: AgentReplyJob,
+    signal: AbortSignal
+  ): Promise<AgentReplyResult> {
+    if (!this.managedCodex) {
+      throw new Error("为保护原 Codex 会话，外部会话只能在持久化远程分支中续写；当前托管执行器不可用");
+    }
+    if (!job.anchorTurnId) {
+      throw new Error("为保护原 Codex 会话，远程续写必须引用包含精确 turnId 的完成通知");
+    }
+    let forked: AgentSession;
+    try {
+      forked = await this.managedCodex.forkThread(job.originalSession, job.anchorTurnId, job.policy);
+      await this.onRemoteBranchCreated?.(job, forked);
+    } catch (forkError) {
+      throw new Error(`无法创建安全的 Codex 远程分支；原会话未被打开或占用：${normalizeError(forkError).message}`);
+    }
+    Object.assign(job.session, forked);
+    return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
   }
 
   private async runForkFallback(
@@ -231,8 +286,17 @@ export class AgentReplyQueue {
     return this.pending.length;
   }
 
-  public dispose(): void {
-    this.cancelAll();
+  public dispose(preserveBrokerTurns = false): void {
+    for (const item of this.pending.splice(0)) {
+      item.controller.abort();
+      item.reject(new Error("任务已取消"));
+    }
+    for (const { pending } of this.active.values()) {
+      const backend = pending.job.session.managedBackend;
+      if (!preserveBrokerTurns || (backend !== "codex-app-server" && backend !== "claude-channel")) {
+        pending.controller.abort();
+      }
+    }
   }
 
   private pump(): void {

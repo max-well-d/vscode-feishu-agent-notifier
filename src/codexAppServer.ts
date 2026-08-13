@@ -4,7 +4,15 @@ import { AgentReplyResult } from "./agentReply";
 import { AgentSession, RemoteExecutionPolicy } from "./types";
 
 type JsonObject = Record<string, unknown>;
-type AppServerState = "stopped" | "starting" | "ready" | "failed";
+export type AppServerState = "stopped" | "starting" | "ready" | "failed";
+
+export type CodexApprovalDecision = "accept" | "decline";
+
+export interface CodexApprovalRequest {
+  id: number;
+  method: string;
+  params: JsonObject;
+}
 
 interface PendingRequest {
   resolve(value: JsonObject): void;
@@ -29,6 +37,7 @@ export interface CodexAppServerOptions {
     error(message: string): void;
   };
   onState?: (state: AppServerState, detail?: string) => void;
+  onApprovalRequest?: (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>;
 }
 
 export interface CodexThreadMetadata {
@@ -82,7 +91,7 @@ export class CodexAppServerClient {
     await this.ensureStarted();
     const result = await this.request("thread/start", {
       cwd,
-      approvalPolicy: "never",
+      approvalPolicy: policy === "inherit" ? "on-request" : "never",
       ...(policy === "planOnly" ? { sandbox: "read-only" } : {}),
       serviceName: "feishu_agent_notifier"
     });
@@ -128,7 +137,7 @@ export class CodexAppServerClient {
       threadId: source.sessionId,
       lastTurnId: sourceTurnId,
       cwd: source.cwd,
-      approvalPolicy: "never",
+      approvalPolicy: policy === "inherit" ? "on-request" : "never",
       ...(policy === "planOnly" ? { sandbox: "read-only" } : {}),
       ephemeral: false,
       excludeTurns: true,
@@ -202,6 +211,9 @@ export class CodexAppServerClient {
     signal: AbortSignal,
     timeoutMs: number
   ): Promise<AgentReplyResult> {
+    if (session.ownership !== "managed" || session.managedBackend !== "codex-app-server") {
+      throw new Error("拒绝直接打开外部 Codex 会话；请先创建插件托管的持久化分支");
+    }
     const startedAt = Date.now();
     await this.ensureThread(session, policy);
     const status = await this.readThreadStatus(session.sessionId);
@@ -215,7 +227,7 @@ export class CodexAppServerClient {
     const start = await this.request("turn/start", {
       threadId: session.sessionId,
       input: [{ type: "text", text: prompt }],
-      approvalPolicy: "never",
+      approvalPolicy: policy === "inherit" ? "on-request" : "never",
       ...(policy === "planOnly"
         ? { sandboxPolicy: { type: "readOnly", networkAccess: false } }
         : {})
@@ -471,7 +483,7 @@ export class CodexAppServerClient {
       return;
     }
     if (id !== undefined && method) {
-      this.handleServerRequest(id, method);
+      void this.handleServerRequest(id, method, objectValue(message.params) ?? {});
       return;
     }
     if (method) {
@@ -479,9 +491,17 @@ export class CodexAppServerClient {
     }
   }
 
-  private handleServerRequest(id: number, method: string): void {
+  private async handleServerRequest(id: number, method: string, params: JsonObject): Promise<void> {
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      this.send({ id, result: { decision: "decline" } });
+      let decision: CodexApprovalDecision = "decline";
+      if (this.options.onApprovalRequest) {
+        try {
+          decision = await this.options.onApprovalRequest({ id, method, params });
+        } catch (error) {
+          this.options.log?.warn(`Codex 权限审批失败，已拒绝：${(error as Error).message}`);
+        }
+      }
+      this.send({ id, result: { decision } });
       return;
     }
     this.send({ id, error: { code: -32601, message: `客户端不支持服务端请求：${method}` } });

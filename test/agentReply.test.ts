@@ -108,7 +108,7 @@ test("extracts Codex turn ids and recognizes only the active-writer conflict", (
   assert.equal(isCodexActiveWriterConflict("Not inside a trusted directory"), false);
 });
 
-test("falls back to a persistent managed fork when Codex reports an active writer", async () => {
+test("always creates a persistent managed fork before replying to an external Codex session", async () => {
   const source: AgentSession = {
     ...codex,
     ownership: "external",
@@ -116,6 +116,7 @@ test("falls back to a persistent managed fork when Codex reports an active write
     name: "Source session"
   };
   let forkedCallback = "";
+  let publicResumeSpawned = false;
   const managed: ManagedCodexExecutor = {
     forkThread: async (session, turnId) => ({
       ...session,
@@ -137,7 +138,10 @@ test("falls back to a persistent managed fork when Codex reports an active write
   };
   const runner = new AgentReplyRunner(
     10_000,
-    activeWriterSpawn(),
+    (() => {
+      publicResumeSpawned = true;
+      throw new Error("external Codex resume must not be spawned");
+    }) as unknown as typeof spawn,
     async () => "codex",
     managed,
     async (_job, session) => { forkedCallback = session.sessionId; }
@@ -158,6 +162,42 @@ test("falls back to a persistent managed fork when Codex reports an active write
   assert.equal(result.turnId, "fork-turn");
   assert.equal(job.session.sessionId, "forked-session");
   assert.equal(forkedCallback, "forked-session");
+  assert.equal(publicResumeSpawned, false);
+});
+
+test("rejects an external Codex reply without an exact turn anchor before opening the session", async () => {
+  const source: AgentSession = {
+    ...codex,
+    ownership: "external",
+    completionEvidence: "authoritative"
+  };
+  let forkAttempted = false;
+  const managed: ManagedCodexExecutor = {
+    forkThread: async () => {
+      forkAttempted = true;
+      throw new Error("must not be reached");
+    },
+    runTurn: async () => {
+      throw new Error("must not be reached");
+    }
+  };
+  const runner = new AgentReplyRunner(10_000, undefined, async () => "codex", managed);
+  const job: AgentReplyJob = {
+    id: "job-no-anchor",
+    chatId: "chat",
+    inboundMessageId: "inbound",
+    session: { ...source },
+    originalSession: { ...source },
+    prompt: "continue",
+    policy: "planOnly"
+  };
+
+  await assert.rejects(
+    runner.run(job, new AbortController().signal),
+    /必须引用包含精确 turnId/
+  );
+  assert.equal(forkAttempted, false);
+  assert.equal(job.session.sessionId, source.sessionId);
 });
 
 test("forks an active external Claude session and persists the returned session id", async () => {
@@ -202,26 +242,6 @@ test("forks an active external Claude session and persists the returned session 
   assert.equal(callbackSession?.forkedFromSessionId, "claude-source");
   assert.equal(callbackSession?.forkedFromTurnId, "claude-source-turn");
 });
-
-function activeWriterSpawn(): typeof spawn {
-  return (() => {
-    const processEvents = new EventEmitter();
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    stdin.once("finish", () => setImmediate(() => {
-      stderr.write("thread-store conflict: thread codex-session already has an active writer");
-      processEvents.emit("close", 1);
-    }));
-    return Object.assign(processEvents, {
-      stdin,
-      stdout,
-      stderr,
-      kill: () => true,
-      pid: 4321
-    }) as unknown as ChildProcessWithoutNullStreams;
-  }) as unknown as typeof spawn;
-}
 
 function successfulClaudeForkSpawn(onSpawn: (args: string[]) => void): typeof spawn {
   return ((_executable: string, args: readonly string[]) => {

@@ -31,6 +31,11 @@ export interface StatusSnapshot {
   remotePending?: number;
   codexManagedState?: "stopped" | "starting" | "ready" | "failed";
   codexManagedError?: string;
+  brokerState?: "stopped" | "starting" | "ready" | "failed";
+  brokerActiveTurns?: number;
+  localPrioritySessions?: number;
+  remoteOwnedSessions?: number;
+  pendingApprovals?: number;
 }
 
 export interface StatusPresentation {
@@ -102,6 +107,7 @@ function buildDetails(snapshot: StatusSnapshot): string[] {
     `待处理通知：${snapshot.pendingCount}`,
     `远程回复：${remoteDetail(snapshot)}`
   ];
+  details.push(`Session Broker：${brokerDetail(snapshot)}`);
   if (snapshot.lastDeliverySuccess) {
     details.push(`最近成功：${formatTime(snapshot.lastDeliverySuccess)}`);
   }
@@ -109,6 +115,15 @@ function buildDetails(snapshot: StatusSnapshot): string[] {
     details.push(`最近错误：${compact(snapshot.lastDeliveryError, 180)}`);
   }
   return details;
+}
+
+function brokerDetail(snapshot: StatusSnapshot): string {
+  const state = snapshot.brokerState === "ready"
+    ? "已连接"
+    : snapshot.brokerState === "starting"
+      ? "启动中"
+      : snapshot.brokerState === "failed" ? "失败" : "按需启动";
+  return `${state}，turn ${snapshot.brokerActiveTurns ?? 0}，本地优先 ${snapshot.localPrioritySessions ?? 0}，远程接管 ${snapshot.remoteOwnedSessions ?? 0}，待审批 ${snapshot.pendingApprovals ?? 0}`;
 }
 
 function remoteDetail(snapshot: StatusSnapshot): string {

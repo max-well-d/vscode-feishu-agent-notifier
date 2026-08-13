@@ -54,3 +54,10 @@ test("renders realtime messages with a distinct blue header", () => {
   assert.match(card.header.title.content, /实时消息/);
   assert.match(card.body.elements[0].content, /Claude Code Session ID/);
 });
+
+test("shows the input origin beside the complete session id", () => {
+  const card = buildFeishuCard({ ...event, inputOrigin: "feishu" }, "done", true);
+  assert.match(JSON.stringify(card), /输入来源/);
+  assert.match(JSON.stringify(card), /飞书远程/);
+  assert.match(JSON.stringify(card), new RegExp(event.sessionId));
+});

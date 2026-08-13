@@ -156,3 +156,27 @@ test("creates a named persistent fork at the exact completed turn", async () => 
   assert.equal(requests.find((request) => request.method === "thread/name/set")?.params?.name, "External title · 飞书");
   client.dispose();
 });
+
+test("refuses to resume an externally owned thread before starting App Server", async () => {
+  let spawned = false;
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "test",
+    spawnImpl: (() => {
+      spawned = true;
+      throw new Error("must not spawn");
+    }) as unknown as typeof spawn
+  });
+
+  await assert.rejects(client.runTurn({
+    source: "codex",
+    sessionId: "thread-external",
+    cwd: "D:\\work\\repo",
+    project: "repo",
+    lastSeenAt: new Date().toISOString(),
+    status: "completed",
+    ownership: "external",
+    completionEvidence: "authoritative"
+  }, "continue", "planOnly", new AbortController().signal, 10_000), /拒绝直接打开外部 Codex 会话/);
+  assert.equal(spawned, false);
+});

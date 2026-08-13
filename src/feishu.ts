@@ -170,7 +170,7 @@ export class FeishuSender {
       } catch (error) {
         lastError = error;
         if (!isRetryableNetworkError(error) || attempt === attempts) {
-          throw error;
+          throw describeNetworkError(error);
         }
         await delay(exponentialDelay(attempt, baseDelayMs));
       }
@@ -246,6 +246,21 @@ function isTransientStatus(status: number): boolean {
 function isRetryableNetworkError(error: unknown): boolean {
   return error instanceof TypeError
     || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name));
+}
+
+export function describeNetworkError(error: unknown): Error {
+  const outer = error instanceof Error ? error : new Error(String(error));
+  const cause = (outer as Error & { cause?: unknown }).cause;
+  if (!cause || cause === error) {
+    return outer;
+  }
+  const causeError = cause instanceof Error ? cause : undefined;
+  const causeCode = typeof cause === "object" && cause !== null && "code" in cause
+    ? String((cause as { code?: unknown }).code ?? "")
+    : "";
+  const causeMessage = causeError?.message || String(cause);
+  const detail = [causeCode, causeMessage].filter(Boolean).join(": ");
+  return detail ? new Error(`${outer.message}（${detail}）`, { cause: outer }) : outer;
 }
 
 function retryDelayMilliseconds(response: Response, attempt: number, baseDelayMs: number): number {

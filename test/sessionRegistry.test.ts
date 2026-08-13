@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { SessionRegistry } from "../src/sessionRegistry";
-import { AgentEvent } from "../src/types";
+import { AgentEvent, AgentSession } from "../src/types";
 
 const event: AgentEvent = {
   source: "codex",
@@ -216,4 +216,35 @@ test("does not upgrade a stale legacy progress route into completion evidence", 
 
   const registry = new SessionRegistry(file);
   assert.equal((await registry.resolveMessage("om_old_progress"))?.completionEvidence, "discovered");
+});
+
+test("keeps a Claude Channel route on the real session after hook migration", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-channel-"));
+  const file = path.join(root, "registry.json");
+  const registry = new SessionRegistry(file);
+  const provisional: AgentSession = {
+    source: "claude-code",
+    sessionId: "channel:bridge-1",
+    channelId: "bridge-1",
+    cwd: event.cwd,
+    project: event.project,
+    lastSeenAt: event.occurredAt,
+    status: "completed",
+    ownership: "managed",
+    completionEvidence: "authoritative",
+    managedBackend: "claude-channel"
+  };
+  await registry.recordManagedSession(provisional);
+  await registry.selectForChat("oc_channel", provisional);
+  await registry.recordEvent({
+    ...event,
+    source: "claude-code",
+    sessionId: "real-claude-session",
+    channelId: "bridge-1"
+  });
+  const updated = await registry.updateExecutionState(provisional, "completed");
+  assert.equal(updated.sessionId, "real-claude-session");
+  assert.equal(updated.managedBackend, "claude-channel");
+  assert.equal((await registry.selectedForChat("oc_channel"))?.sessionId, "real-claude-session");
+  assert.equal(await registry.getSession("channel:bridge-1"), undefined);
 });

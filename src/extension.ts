@@ -19,7 +19,7 @@ import {
 import { LocalHookServer } from "./server";
 import { buildStatusPresentation, StatusSnapshot } from "./statusUi";
 import { AgentReplyJob, AgentReplyQueue, AgentReplyRunner, shouldForkClaudeSession } from "./agentReply";
-import { CodexAppServerClient } from "./codexAppServer";
+import { SessionBrokerClient } from "./brokerClient";
 import { ReplyRouter } from "./replyRouter";
 import { discoverLocalSessions } from "./sessionCatalog";
 import { SessionRegistry } from "./sessionRegistry";
@@ -43,6 +43,7 @@ import {
 } from "./types";
 import { parseIdList, validateIdListInput, validateReceiveIdInput } from "./remoteConfiguration";
 import { prepareDataDirectory, resolveDataDirectory } from "./dataDirectory";
+import { ManagedSessionPanel } from "./managedSessionPanel";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
 const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
@@ -58,7 +59,8 @@ let feishuInboundError: string | undefined;
 let sessionRegistry: SessionRegistry | undefined;
 let agentReplyQueue: AgentReplyQueue | undefined;
 let replyRouter: ReplyRouter | undefined;
-let codexAppServerClient: CodexAppServerClient | undefined;
+let codexAppServerClient: SessionBrokerClient | undefined;
+const managedSessionPanels = new Map<string, ManagedSessionPanel>();
 let codexTranscriptWatcher: CodexTranscriptWatcher | undefined;
 let claudeTranscriptWatcher: ClaudeTranscriptWatcher | undefined;
 let claudeRealtimeSource: "message-display" | "transcript" | "probing" | undefined;
@@ -80,6 +82,9 @@ let activeExtensionId = "local.feishu-agent-notifier";
 let activeDeliveries = 0;
 let statusRefreshId = 0;
 let configurationWizardSaving = false;
+let brokerApprovalTimer: NodeJS.Timeout | undefined;
+let brokerCompletionDrainRunning = false;
+const announcedApprovals = new Set<string>();
 let statusSnapshot: StatusSnapshot = {
   initializing: true,
   enabled: true,
@@ -133,6 +138,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.clearPending", () => clearPendingEvents(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.showRemoteSessions", () => showRemoteSessions(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.cancelRemoteReplies", () => cancelRemoteReplies()),
+    vscode.commands.registerCommand("feishuAgentNotifier.openManagedCodexSession", () => openManagedCodexSession(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.startManagedClaudeSession", () => startManagedClaudeSession(context)),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (configurationWizardSaving || !event.affectsConfiguration("feishuAgentNotifier")) {
         return;
@@ -155,11 +162,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await deployHelper(context);
   await refreshInstalledHookPaths(context);
   await restartServer(context);
+  startBrokerApprovalMonitor(context);
 }
 
 export async function deactivate(): Promise<void> {
+  if (brokerApprovalTimer) {
+    clearInterval(brokerApprovalTimer);
+    brokerApprovalTimer = undefined;
+  }
   stopReceiverTakeoverMonitor();
-  agentReplyQueue?.dispose();
+  // Do not cancel Broker-owned turns during Extension Host reload. The new host
+  // reconnects and drains the durable completion inbox.
+  agentReplyQueue?.dispose(true);
   agentReplyQueue = undefined;
   codexAppServerClient?.dispose();
   codexAppServerClient = undefined;
@@ -394,6 +408,9 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
     {
       waitUntilReady: (job, signal) => waitUntilAgentSessionIdle(job, signal),
       onStarted: async (job) => {
+        if (job.session.source === "codex") {
+          await codexAppServerClient?.setRemoteContext(job.session.sessionId, job.chatId, job.inboundMessageId);
+        }
         const updated = await sessionRegistry?.updateExecutionState(job.session, "progress");
         if (updated) {
           Object.assign(job.session, updated);
@@ -439,8 +456,63 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
   );
 }
 
-function createCodexAppServerClient(context: vscode.ExtensionContext): CodexAppServerClient {
-  return new CodexAppServerClient({
+function startBrokerApprovalMonitor(context: vscode.ExtensionContext): void {
+  if (brokerApprovalTimer) {
+    clearInterval(brokerApprovalTimer);
+  }
+  brokerApprovalTimer = setInterval(() => {
+    if (!codexAppServerClient || codexAppServerClient.brokerState !== "ready") {
+      return;
+    }
+    void codexAppServerClient.refresh().then(async (snapshot) => {
+      await drainBrokerCompletions(context);
+      const activeIds = new Set(snapshot.pendingApprovals.map((item) => item.approvalId));
+      for (const id of [...announcedApprovals]) {
+        if (!activeIds.has(id)) {
+          announcedApprovals.delete(id);
+        }
+      }
+      for (const approval of snapshot.pendingApprovals) {
+        if (announcedApprovals.has(approval.approvalId) || !approval.chatId || !approval.inboundMessageId) {
+          continue;
+        }
+        announcedApprovals.add(approval.approvalId);
+        const source = approval.source === "claude-code" ? "Claude Code" : "Codex";
+        await replyToInbound(
+          approval.inboundMessageId,
+          approval.chatId,
+          `${source} 请求权限：${approval.summary}\n审批 ID：${approval.approvalId}\n发送 /approve ${approval.approvalId} 或 /deny ${approval.approvalId}；本地与飞书先响应者生效。`
+        );
+      }
+    }).catch((error) => output?.debug(`Broker 审批轮询失败：${(error as Error).message}`));
+  }, 1_500);
+  brokerApprovalTimer.unref();
+}
+
+async function drainBrokerCompletions(context: vscode.ExtensionContext): Promise<void> {
+  if (brokerCompletionDrainRunning || !codexAppServerClient || !hookServer?.port || receiverStandbyPort) {
+    return;
+  }
+  brokerCompletionDrainRunning = true;
+  try {
+    for (;;) {
+      const completion = await codexAppServerClient.takeCompletion();
+      if (!completion) {
+        break;
+      }
+      const sender = new FeishuSender();
+      await enqueueEvent(context, sender, completion.event, false);
+      await codexAppServerClient.acknowledgeCompletion(completion.id);
+    }
+  } finally {
+    brokerCompletionDrainRunning = false;
+  }
+}
+
+function createCodexAppServerClient(context: vscode.ExtensionContext): SessionBrokerClient {
+  return new SessionBrokerClient({
+    dataDirectory: extensionStoragePath,
+    brokerScript: path.join(context.extensionPath, "dist", "broker.js"),
     executable: async () => {
       await refreshAgentExecutables();
       return agentExecutablePaths.codex;
@@ -477,13 +549,171 @@ function createReplyRouter(context: vscode.ExtensionContext): ReplyRouter {
       const session = await codexAppServerClient.startThread(cwd, project, policy, name);
       return sessionRegistry.recordManagedSession(session);
     },
+    createManagedClaudeSession: async (cwd, project, policy, name) => startManagedClaudeSession(
+      context,
+      { cwd, project, policy, name }
+    ),
     steerManagedCodex: async (session, prompt) => {
       if (!codexAppServerClient) {
         throw new Error("Codex App Server 托管执行器尚未初始化");
       }
       return codexAppServerClient.steer(session, prompt);
+    },
+    describeHandoff: async (session) => {
+      if (!codexAppServerClient || session.source !== "codex" || session.ownership !== "managed") {
+        return undefined;
+      }
+      const snapshot = await codexAppServerClient.refresh();
+      const state = snapshot.handoffs.find((item) => item.sessionId === session.sessionId);
+      return state && state.authority === "local" && state.turnState !== "idle" ? "本地优先" : "远程接管";
+    },
+    resolveApproval: async (approvalId, decision) => {
+      if (!codexAppServerClient) {
+        throw new Error("Session Broker 未初始化");
+      }
+      await codexAppServerClient.resolveApproval(approvalId, decision, "feishu");
     }
   });
+}
+
+async function startManagedClaudeSession(
+  context: vscode.ExtensionContext,
+  requested?: { cwd: string; project: string; policy: RemoteExecutionPolicy; name: string }
+): Promise<AgentSession> {
+  if (!codexAppServerClient || !sessionRegistry) {
+    throw new Error("Session Broker 尚未初始化");
+  }
+  await refreshAgentExecutables();
+  const claudeExecutable = agentExecutablePaths["claude-code"];
+  if (!claudeExecutable) {
+    throw new Error("未找到 Claude Code CLI；请在扩展设置中指定可执行文件路径");
+  }
+  const workspace = requested ?? (vscode.workspace.workspaceFolders?.[0]
+    ? {
+      cwd: vscode.workspace.workspaceFolders[0].uri.fsPath,
+      project: vscode.workspace.workspaceFolders[0].name,
+      policy: getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled"),
+      name: vscode.workspace.workspaceFolders[0].name
+    }
+    : undefined);
+  if (!workspace) {
+    throw new Error("请先打开目标工作区");
+  }
+  if (workspace.policy === "disabled") {
+    throw new Error("请先把远程执行策略设为 planOnly 或 inherit");
+  }
+  await codexAppServerClient.refresh();
+  const channelId = crypto.randomUUID();
+  const provisionalId = `channel:${channelId}`;
+  const mcpPath = path.join(extensionStoragePath, `claude-channel-${channelId}.mcp.json`);
+  const mcpConfig = {
+    mcpServers: {
+      "feishu-agent-notifier": {
+        command: process.execPath,
+        args: [
+          path.join(context.extensionPath, "dist", "claude-channel.js"),
+          "--data-dir", extensionStoragePath,
+          "--channel-id", channelId
+        ],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          FEISHU_AGENT_CHANNEL_ID: channelId,
+          FEISHU_AGENT_DATA_DIRECTORY: extensionStoragePath
+        }
+      }
+    }
+  };
+  await fs.writeFile(mcpPath, JSON.stringify(mcpConfig, null, 2), { encoding: "utf8", mode: 0o600 });
+  const session = await sessionRegistry.recordManagedSession({
+    source: "claude-code",
+    sessionId: provisionalId,
+    channelId,
+    cwd: workspace.cwd,
+    project: workspace.project,
+    lastSeenAt: new Date().toISOString(),
+    status: "completed",
+    name: workspace.name,
+    ownership: "managed",
+    completionEvidence: "authoritative",
+    managedBackend: "claude-channel"
+  });
+  const terminal = vscode.window.createTerminal({
+    name: `Claude · ${workspace.name}`,
+    cwd: workspace.cwd,
+    shellPath: claudeExecutable,
+    shellArgs: [
+      "--mcp-config", mcpPath,
+      "--dangerously-load-development-channels", "server:feishu-agent-notifier",
+      ...(workspace.policy === "planOnly" ? ["--permission-mode", "plan"] : [])
+    ],
+    env: {
+      FEISHU_AGENT_CHANNEL_ID: channelId,
+      FEISHU_AGENT_DATA_DIRECTORY: extensionStoragePath
+    }
+  });
+  terminal.show(false);
+  output?.info(`已启动原版 Claude Code Channel：${formatAgentSession(session)}`);
+  return session;
+}
+
+async function openManagedCodexSession(context: vscode.ExtensionContext): Promise<void> {
+  if (!codexAppServerClient || !sessionRegistry) {
+    throw new Error("Session Broker 尚未初始化");
+  }
+  const managed = (await sessionRegistry.listSessions(100)).filter((session) =>
+    session.source === "codex" && session.ownership === "managed" && session.managedBackend === "codex-app-server");
+  let session: AgentSession | undefined;
+  if (managed.length > 0) {
+    const choice = await vscode.window.showQuickPick([
+      ...managed.map((item) => ({
+        label: item.alias || item.name || item.project,
+        description: item.sessionId,
+        detail: item.cwd,
+        session: item
+      })),
+      { label: "$(add) 创建新的托管 Codex 会话", description: "", detail: "", session: undefined }
+    ], { title: "打开本地/飞书共享的 Codex 会话", matchOnDescription: true, matchOnDetail: true });
+    if (!choice) {
+      return;
+    }
+    session = choice.session;
+  }
+  if (!session) {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace) {
+      await vscode.window.showWarningMessage("请先打开目标工作区。 ");
+      return;
+    }
+    const name = await vscode.window.showInputBox({
+      title: "托管 Codex 会话名称",
+      value: workspace.name,
+      prompt: "该名称会显示在飞书卡片和本地会话列表中"
+    });
+    if (name === undefined) {
+      return;
+    }
+    const policy = getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
+    if (policy === "disabled") {
+      await vscode.window.showWarningMessage("请先把远程执行策略设为 planOnly 或 inherit。 ");
+      return;
+    }
+    session = await codexAppServerClient.startThread(workspace.uri.fsPath, workspace.name, policy, name.trim() || workspace.name);
+    session = await sessionRegistry.recordManagedSession(session);
+  }
+  const existing = managedSessionPanels.get(session.sessionId);
+  if (existing) {
+    existing.reveal();
+    return;
+  }
+  const panel = new ManagedSessionPanel(
+    codexAppServerClient,
+    session,
+    () => getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled"),
+    () => managedSessionPanels.delete(session?.sessionId ?? "")
+  );
+  managedSessionPanels.set(session.sessionId, panel);
+  output?.info(`已打开共享 Codex 会话面板：${formatAgentSession(session)}`);
+  void refreshStatusBar(context);
 }
 
 async function startFeishuInbound(context: vscode.ExtensionContext): Promise<void> {
@@ -716,6 +946,13 @@ async function enqueueEventAsync(
   event: AgentEvent,
   queueOnFailure: boolean
 ): Promise<void> {
+  if (event.channelId && codexAppServerClient) {
+    event.inputOrigin = await codexAppServerClient.claudeInputOrigin(event.channelId).catch(() => undefined);
+  } else if (event.source === "codex" && codexAppServerClient) {
+    const snapshot = codexAppServerClient.lastSnapshot;
+    const handoff = snapshot?.handoffs.find((item) => item.sessionId === event.sessionId);
+    event.inputOrigin = handoff?.inputOrigin;
+  }
   await enrichAgentEventSessionName(event);
   await sessionRegistry?.recordEvent(event);
   if (eventIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), event.cwd)) {
@@ -1216,6 +1453,9 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
   if (refreshId !== statusRefreshId) {
     return;
   }
+  const brokerSnapshot = codexAppServerClient?.brokerState === "ready"
+    ? await codexAppServerClient.refresh().catch(() => codexAppServerClient?.lastSnapshot)
+    : codexAppServerClient?.lastSnapshot;
   statusSnapshot = {
     initializing: false,
     enabled,
@@ -1246,7 +1486,12 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
     remoteActive: agentReplyQueue?.activeCount ?? 0,
     remotePending: agentReplyQueue?.pendingCount ?? 0,
     codexManagedState: codexAppServerClient?.state,
-    codexManagedError: codexAppServerClient?.lastError
+    codexManagedError: codexAppServerClient?.lastError,
+    brokerState: codexAppServerClient?.brokerState,
+    brokerActiveTurns: brokerSnapshot?.activeTurns,
+    localPrioritySessions: brokerSnapshot?.handoffs.filter((item) => item.authority === "local").length,
+    remoteOwnedSessions: brokerSnapshot?.handoffs.filter((item) => item.authority === "remote").length,
+    pendingApprovals: brokerSnapshot?.pendingApprovals.length
   };
   renderStatusBar();
 }
@@ -1268,6 +1513,11 @@ function renderStatusBar(): void {
     remotePending: agentReplyQueue?.pendingCount ?? 0,
     codexManagedState: codexAppServerClient?.state,
     codexManagedError: codexAppServerClient?.lastError
+    ,brokerState: codexAppServerClient?.brokerState
+    ,brokerActiveTurns: codexAppServerClient?.lastSnapshot?.activeTurns
+    ,localPrioritySessions: codexAppServerClient?.lastSnapshot?.handoffs.filter((item) => item.authority === "local").length
+    ,remoteOwnedSessions: codexAppServerClient?.lastSnapshot?.handoffs.filter((item) => item.authority === "remote").length
+    ,pendingApprovals: codexAppServerClient?.lastSnapshot?.pendingApprovals.length
   });
   statusBar.text = presentation.text;
   statusBar.backgroundColor = presentation.severity === "error"
@@ -1289,7 +1539,7 @@ function renderStatusBar(): void {
 }
 
 interface StatusActionItem extends vscode.QuickPickItem {
-  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "remoteConfig" | "dataDirectory" | "sessions" | "cancelRemote" | "settings" | "logs";
+  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "remoteConfig" | "dataDirectory" | "sessions" | "managedCodex" | "managedClaude" | "cancelRemote" | "settings" | "logs";
 }
 
 async function showStatus(context: vscode.ExtensionContext): Promise<void> {
@@ -1310,6 +1560,8 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       : []),
     { label: "$(remote) 配置飞书远程操控", description: "权限、目标和白名单向导", action: "remoteConfig" },
     { label: "$(folder) 选择本地数据目录", description: extensionStoragePath, action: "dataDirectory" },
+    { label: "$(hubot) 打开共享 Codex 会话", description: "本地面板与飞书共用 Session Broker", action: "managedCodex" },
+    { label: "$(terminal) 启动共享 Claude Code", description: "原版 CLI + 官方 Channel", action: "managedClaude" },
     { label: "$(list-tree) 查看本地 Agent 会话", action: "sessions" },
     ...((agentReplyQueue?.activeCount ?? 0) + (agentReplyQueue?.pendingCount ?? 0) > 0
       ? [{ label: "$(stop-circle) 取消远程回复任务", action: "cancelRemote" as const }]
@@ -1352,6 +1604,16 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       break;
     case "sessions":
       await showRemoteSessions(context);
+      break;
+    case "managedCodex":
+      await openManagedCodexSession(context);
+      break;
+    case "managedClaude":
+      try {
+        await startManagedClaudeSession(context);
+      } catch (error) {
+        await vscode.window.showErrorMessage(`启动共享 Claude Code 失败：${(error as Error).message}`);
+      }
       break;
     case "cancelRemote":
       await cancelRemoteReplies();
@@ -1497,6 +1759,11 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
       `${normalizedStringArray(getSetting<string[]>("remoteAllowedUserOpenIds", [])).length} 个 open_id`));
     checks.push(checkLine("远程回复队列", true,
       `运行 ${agentReplyQueue?.activeCount ?? 0}，排队 ${agentReplyQueue?.pendingCount ?? 0}`));
+    const broker = codexAppServerClient?.brokerState === "ready"
+      ? await codexAppServerClient.refresh().catch(() => codexAppServerClient?.lastSnapshot)
+      : codexAppServerClient?.lastSnapshot;
+    checks.push(checkLine("Session Broker", codexAppServerClient?.brokerState !== "failed",
+      `${codexAppServerClient?.brokerState ?? "stopped"}，PID ${broker?.pid ?? "未启动"}，活动 turn ${broker?.activeTurns ?? 0}，待审批 ${broker?.pendingApprovals.length ?? 0}`));
     checks.push(checkLine("Codex App Server 托管器", codexAppServerClient?.state !== "failed",
       `${codexAppServerClient?.state ?? "stopped"}${codexAppServerClient?.lastError ? `，${codexAppServerClient.lastError}` : ""}；首次 /new codex 时按需启动`));
   }

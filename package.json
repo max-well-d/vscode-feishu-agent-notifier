@@ -57,7 +57,9 @@
     "onCommand:feishuAgentNotifier.retryPending",
     "onCommand:feishuAgentNotifier.clearPending",
     "onCommand:feishuAgentNotifier.showRemoteSessions",
-    "onCommand:feishuAgentNotifier.cancelRemoteReplies"
+    "onCommand:feishuAgentNotifier.cancelRemoteReplies",
+    "onCommand:feishuAgentNotifier.openManagedCodexSession",
+    "onCommand:feishuAgentNotifier.startManagedClaudeSession"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -125,6 +127,14 @@
       {
         "command": "feishuAgentNotifier.cancelRemoteReplies",
         "title": "飞书 Agent 通知：取消远程回复任务"
+      },
+      {
+        "command": "feishuAgentNotifier.openManagedCodexSession",
+        "title": "飞书 Agent 通知：打开本地/飞书共享 Codex 会话"
+      },
+      {
+        "command": "feishuAgentNotifier.startManagedClaudeSession",
+        "title": "飞书 Agent 通知：启动本地/飞书共享 Claude Code 会话"
       }
     ],
     "walkthroughs": [
@@ -256,7 +266,10 @@
         },
         "feishuAgentNotifier.remoteAllowedUserOpenIds": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^ou_" },
+          "items": {
+            "type": "string",
+            "pattern": "^ou_"
+          },
           "uniqueItems": true,
           "default": [],
           "scope": "machine",
@@ -265,7 +278,10 @@
         },
         "feishuAgentNotifier.remoteAllowedChatIds": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^oc_" },
+          "items": {
+            "type": "string",
+            "pattern": "^oc_"
+          },
           "uniqueItems": true,
           "default": [],
           "scope": "machine",
@@ -314,7 +330,9 @@
         "feishuAgentNotifier.projectDestinations": {
           "type": "object",
           "default": {},
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "scope": "machine",
           "order": 32,
           "description": "可选的项目路由：键为项目名或绝对路径，值为飞书 chat_id；仅应用机器人模式生效。"
@@ -452,7 +470,7 @@
   },
   "scripts": {
     "compile": "tsc -p .",
-    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node22 --external:vscode --external:./larkSdk --outfile=dist/extension.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/larkSdk.js",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node22 --external:vscode --external:./larkSdk --outfile=dist/extension.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/larkSdk.js && esbuild src/brokerEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/broker.js && esbuild src/claudeChannelEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/claude-channel.js",
     "vscode:prepublish": "npm run compile && npm run bundle",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test out/test/*.test.js",
@@ -461,7 +479,8 @@
     "package": "npm run compile && npm run bundle && vsce package --no-dependencies"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.73.0"
+    "@larksuiteoapi/node-sdk": "^1.73.0",
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FeishuSender, createWebhookSignature, validateConfig } from "../src/feishu";
+import { FeishuSender, createWebhookSignature, describeNetworkError, validateConfig } from "../src/feishu";
 import { AgentEvent, NotifierConfig } from "../src/types";
 
 const event: AgentEvent = {
@@ -147,4 +147,10 @@ test("does not retry permanent Feishu errors", async () => {
 
   await assert.rejects(() => new FeishuSender(fakeFetch).sendEvent(event, webhookConfig), /飞书发送失败/);
   assert.equal(attempts, 1);
+});
+
+test("includes the underlying network code in fetch diagnostics", () => {
+  const cause = Object.assign(new Error("socket disconnected"), { code: "ECONNRESET" });
+  const error = new TypeError("fetch failed", { cause });
+  assert.match(describeNetworkError(error).message, /fetch failed（ECONNRESET: socket disconnected）/);
 });
