@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -41,6 +42,7 @@ export interface ProcessBridgeInspection {
 
 export async function deployProcessBridge(options: ProcessBridgeOptions): Promise<ProcessBridgeInstallation> {
   const root = path.join(options.dataDirectory, "process-bridge");
+  validateProcessBridgeTargets(options, root);
   const codexDirectory = path.join(root, "codex");
   const claudeDirectory = path.join(root, "claude");
   await Promise.all([
@@ -63,33 +65,42 @@ export async function deployProcessBridge(options: ProcessBridgeOptions): Promis
   ]);
 
   if (process.platform === "win32") {
+    const source = path.join(options.extensionPath, "assets", "windows", "BridgeLauncher.cs");
     const compiled = path.join(root, "BridgeLauncher.exe");
-    await compileWindowsLauncher(
-      path.join(options.extensionPath, "assets", "windows", "BridgeLauncher.cs"),
-      compiled
-    );
-    const codexLauncher = path.join(codexDirectory, "codex-feishu.exe");
-    const claudeLauncher = path.join(claudeDirectory, "claude-feishu.exe");
+    const compiledWindow = path.join(root, "BridgeLauncherWindow.exe");
     await Promise.all([
-      fs.copyFile(compiled, codexLauncher),
-      fs.copyFile(compiled, claudeLauncher),
-      fs.writeFile(path.join(codexDirectory, "launcher.conf"), launcherConfig(options.runtimePath, bridgeScript, "codex", codexConfig), { encoding: "utf8", mode: 0o600 }),
-      fs.writeFile(path.join(claudeDirectory, "launcher.conf"), launcherConfig(options.runtimePath, bridgeScript, "claude", claudeConfig), { encoding: "utf8", mode: 0o600 })
+      compileWindowsLauncher(source, compiled, false),
+      compileWindowsLauncher(source, compiledWindow, true)
+    ]);
+    const [consoleId, windowId] = await Promise.all([
+      fileContentId(source, "console"),
+      fileContentId(source, "window"),
+    ]);
+    const codexLauncher = path.join(codexDirectory, `codex-feishu-${consoleId}.exe`);
+    const claudeLauncher = path.join(claudeDirectory, `claude-feishu-wrapper-${windowId}.exe`);
+    const claudeCliLauncher = path.join(claudeDirectory, `claude-feishu-${consoleId}.exe`);
+    await Promise.all([
+      copyFileIfMissing(compiled, codexLauncher),
+      copyFileIfMissing(compiledWindow, claudeLauncher),
+      copyFileIfMissing(compiled, claudeCliLauncher),
+      fs.writeFile(path.join(codexDirectory, "launcher.conf"), launcherConfig(options.runtimePath, bridgeScript, "codex", codexConfig, options.codexExecutable, false), { encoding: "utf8", mode: 0o600 }),
+      fs.writeFile(path.join(claudeDirectory, "launcher.conf"), launcherConfig(options.runtimePath, bridgeScript, "claude", claudeConfig, options.claudeExecutable, true), { encoding: "utf8", mode: 0o600 }),
+      fs.writeFile(path.join(claudeDirectory, "launcher-cli.conf"), launcherConfig(options.runtimePath, bridgeScript, "claude", claudeConfig, options.claudeExecutable, false), { encoding: "utf8", mode: 0o600 })
     ]);
     return {
       root,
       codexLauncher,
       claudeLauncher,
       codexCliCommand: codexLauncher,
-      claudeCliCommand: claudeLauncher
+      claudeCliCommand: claudeCliLauncher
     };
   }
 
   const codexLauncher = path.join(codexDirectory, "codex-feishu");
   const claudeLauncher = path.join(claudeDirectory, "claude-feishu");
   await Promise.all([
-    writeUnixLauncher(codexLauncher, options.runtimePath, bridgeScript, "codex", codexConfig),
-    writeUnixLauncher(claudeLauncher, options.runtimePath, bridgeScript, "claude", claudeConfig)
+    writeUnixLauncher(codexLauncher, options.runtimePath, bridgeScript, "codex", codexConfig, options.codexExecutable),
+    writeUnixLauncher(claudeLauncher, options.runtimePath, bridgeScript, "claude", claudeConfig, options.claudeExecutable)
   ]);
   return {
     root,
@@ -103,8 +114,13 @@ export async function deployProcessBridge(options: ProcessBridgeOptions): Promis
 export async function inspectProcessBridge(dataDirectory: string): Promise<ProcessBridgeInspection> {
   const root = path.join(dataDirectory, "process-bridge");
   const executableExtension = process.platform === "win32" ? ".exe" : "";
-  const codexLauncher = path.join(root, "codex", `codex-feishu${executableExtension}`);
-  const claudeLauncher = path.join(root, "claude", `claude-feishu${executableExtension}`);
+  const backup = await readProcessBridgeBackup(dataDirectory);
+  const codexLauncher = backup?.codexLauncher
+    ?? path.join(root, "codex", `codex-feishu${executableExtension}`);
+  const claudeLauncher = backup?.claudeLauncher
+    ?? path.join(root, "claude", process.platform === "win32"
+      ? "claude-feishu-wrapper.exe"
+      : `claude-feishu${executableExtension}`);
   const [codexStat, claudeStat, shared] = await Promise.all([
     fs.stat(codexLauncher).catch(() => undefined),
     fs.stat(claudeLauncher).catch(() => undefined),
@@ -141,6 +157,55 @@ export async function readProcessBridgeBackup(dataDirectory: string): Promise<Pr
   }
 }
 
+export async function cleanupLegacyProcessBridgeFiles(
+  dataDirectory: string,
+  protectedPaths: Array<string | undefined> = []
+): Promise<string[]> {
+  if (process.platform !== "win32") {
+    return [];
+  }
+  const root = path.join(dataDirectory, "process-bridge");
+  const protectedSet = new Set(protectedPaths.filter((value): value is string => Boolean(value)).map((value) => path.resolve(value).toLowerCase()));
+  for (const protectedPath of [...protectedSet]) {
+    const match = path.basename(protectedPath).match(/^codex-feishu-([0-9a-f]{12})\.exe$/i);
+    if (match) {
+      protectedSet.add(path.resolve(root, "claude", `claude-feishu-${match[1]}.exe`).toLowerCase());
+    }
+  }
+  const candidates = [
+    path.join(root, "BridgeLauncher.exe"),
+    path.join(root, "BridgeLauncherWindow.exe"),
+    ...await matchingFiles(path.join(root, "codex"), /^codex-feishu(?:-[0-9a-f]{12})?\.exe$/i),
+    ...await matchingFiles(path.join(root, "claude"), /^claude-feishu(?:-wrapper)?(?:-[0-9a-f]{12})?\.exe$/i)
+  ];
+  const removed: string[] = [];
+  for (const candidate of candidates) {
+    if (protectedSet.has(path.resolve(candidate).toLowerCase())) {
+      continue;
+    }
+    if (!(await fs.stat(candidate).catch(() => undefined))?.isFile()) {
+      continue;
+    }
+    try {
+      await fs.rm(candidate, { force: true });
+      removed.push(candidate);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EPERM" && code !== "EACCES") {
+        throw error;
+      }
+    }
+  }
+  return removed;
+}
+
+async function matchingFiles(directory: string, pattern: RegExp): Promise<string[]> {
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isFile() && pattern.test(entry.name))
+    .map((entry) => path.join(directory, entry.name));
+}
+
 function bridgeConfig(options: ProcessBridgeOptions, realExecutable: string, claudeChannelScript: string): object {
   return {
     protocolVersion: 1,
@@ -151,15 +216,36 @@ function bridgeConfig(options: ProcessBridgeOptions, realExecutable: string, cla
   };
 }
 
-function launcherConfig(runtime: string, script: string, mode: "codex" | "claude", config: string): string {
-  return `${runtime}\n${script}\n${mode}\n${config}\n`;
+function launcherConfig(
+  runtime: string,
+  script: string,
+  mode: "codex" | "claude",
+  config: string,
+  fallbackExecutable: string,
+  hideWindow = false
+): string {
+  return `${runtime}\n${script}\n${mode}\n${config}\n${fallbackExecutable}\n${hideWindow ? "1" : "0"}\n`;
 }
 
-async function compileWindowsLauncher(source: string, output: string): Promise<void> {
+export function validateProcessBridgeTargets(options: ProcessBridgeOptions, bridgeRoot?: string): void {
+  const root = path.resolve(bridgeRoot ?? path.join(options.dataDirectory, "process-bridge"));
+  for (const [name, executable] of [
+    ["Codex", options.codexExecutable],
+    ["Claude Code", options.claudeExecutable]
+  ] as const) {
+    const resolved = path.resolve(executable);
+    const relative = path.relative(root, resolved);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      throw new Error(`${name} 真实可执行文件不能指向 Feishu Agent 进程桥接目录：${resolved}`);
+    }
+  }
+}
+
+async function compileWindowsLauncher(source: string, output: string, windowApplication: boolean): Promise<void> {
   await fs.rm(output, { force: true });
   const command = [
     "$ErrorActionPreference='Stop'",
-    "Add-Type -Path $env:FEISHU_BRIDGE_SOURCE -OutputAssembly $env:FEISHU_BRIDGE_OUTPUT -OutputType ConsoleApplication"
+    "Add-Type -Path $env:FEISHU_BRIDGE_SOURCE -OutputAssembly $env:FEISHU_BRIDGE_OUTPUT -OutputType $env:FEISHU_BRIDGE_OUTPUT_TYPE"
   ].join("; ");
   await new Promise<void>((resolve, reject) => {
     const child = spawn("powershell.exe", [
@@ -170,7 +256,8 @@ async function compileWindowsLauncher(source: string, output: string): Promise<v
       env: {
         ...process.env,
         FEISHU_BRIDGE_SOURCE: source,
-        FEISHU_BRIDGE_OUTPUT: output
+        FEISHU_BRIDGE_OUTPUT: output,
+        FEISHU_BRIDGE_OUTPUT_TYPE: windowApplication ? "WindowsApplication" : "ConsoleApplication"
       }
     });
     let stderr = "";
@@ -187,9 +274,10 @@ async function writeUnixLauncher(
   runtime: string,
   script: string,
   mode: "codex" | "claude",
-  config: string
+  config: string,
+  fallbackExecutable: string
 ): Promise<void> {
-  const content = `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${shellQuote(runtime)} ${shellQuote(script)} ${mode} --config ${shellQuote(config)} -- "$@"\n`;
+  const content = `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${shellQuote(runtime)} ${shellQuote(script)} ${mode} --config ${shellQuote(config)} --fallback-executable ${shellQuote(fallbackExecutable)} -- "$@"\n`;
   await fs.writeFile(destination, content, { encoding: "utf8", mode: 0o700 });
   await fs.chmod(destination, 0o700);
 }
@@ -201,4 +289,26 @@ function shellQuote(value: string): string {
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+async function fileContentId(filePath: string, discriminator: string): Promise<string> {
+  return crypto.createHash("sha256")
+    .update(discriminator)
+    .update("\0")
+    .update(await fs.readFile(filePath))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+async function copyFileIfMissing(source: string, destination: string): Promise<void> {
+  if ((await fs.stat(destination).catch(() => undefined))?.isFile()) {
+    return;
+  }
+  try {
+    await fs.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
 }

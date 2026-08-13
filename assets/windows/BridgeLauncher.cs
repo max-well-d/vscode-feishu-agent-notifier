@@ -13,16 +13,23 @@ public static class BridgeLauncher
         try
         {
             string directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string configPath = Path.Combine(directory, "launcher.conf");
+            string executableName = Path.GetFileName(Assembly.GetExecutingAssembly().Location);
+            bool isClaudeCli = executableName.StartsWith("claude-feishu-", StringComparison.OrdinalIgnoreCase)
+                && executableName.IndexOf("wrapper", StringComparison.OrdinalIgnoreCase) < 0;
+            string configName = isClaudeCli ? "launcher-cli.conf" : "launcher.conf";
+            string configPath = Path.Combine(directory, configName);
             string[] config = File.ReadAllLines(configPath, Encoding.UTF8);
-            if (config.Length < 4)
-                throw new InvalidOperationException("launcher.conf requires runtime, script, mode, and bridge config paths");
+            if (config.Length < 6)
+                throw new InvalidOperationException("launcher config requires runtime, script, mode, bridge config, fallback executable, and window mode");
+            bool hideWindow = config[5] == "1";
 
             var allArgs = new List<string>();
             allArgs.Add(config[1]);
             allArgs.Add(config[2]);
             allArgs.Add("--config");
             allArgs.Add(config[3]);
+            allArgs.Add("--fallback-executable");
+            allArgs.Add(config[4]);
             allArgs.Add("--");
             allArgs.AddRange(args);
 
@@ -30,13 +37,27 @@ public static class BridgeLauncher
             start.FileName = config[0];
             start.Arguments = JoinArguments(allArgs);
             start.UseShellExecute = false;
-            start.CreateNoWindow = false;
+            start.CreateNoWindow = hideWindow;
+            if (hideWindow) start.WindowStyle = ProcessWindowStyle.Hidden;
             start.EnvironmentVariables["ELECTRON_RUN_AS_NODE"] = "1";
+            if (hideWindow) start.EnvironmentVariables["FEISHU_AGENT_BRIDGE_HIDE_WINDOW"] = "1";
             bool relay = Console.IsInputRedirected || Console.IsOutputRedirected || Console.IsErrorRedirected;
             start.RedirectStandardInput = relay;
             start.RedirectStandardOutput = relay;
             start.RedirectStandardError = relay;
-            using (Process process = Process.Start(start))
+            Process bridgeProcess;
+            try
+            {
+                bridgeProcess = Process.Start(start);
+                if (bridgeProcess == null)
+                    throw new InvalidOperationException("bridge runtime did not create a process");
+            }
+            catch (Exception startError)
+            {
+                Console.Error.WriteLine("Feishu Agent bridge runtime failed; starting the original Agent: " + startError.Message);
+                return RunOriginal(config[2], config[4], args, hideWindow);
+            }
+            using (Process process = bridgeProcess)
             {
                 Thread input = null;
                 Thread output = null;
@@ -57,6 +78,28 @@ public static class BridgeLauncher
         {
             Console.Error.WriteLine("Feishu Agent bridge launcher failed: " + error.Message);
             return 1;
+        }
+    }
+
+    private static int RunOriginal(string mode, string configuredExecutable, string[] args, bool hideWindow)
+    {
+        string executable = configuredExecutable;
+        var forwarded = new List<string>(args);
+        if (mode == "claude" && forwarded.Count > 0 && File.Exists(forwarded[0]))
+        {
+            executable = forwarded[0];
+            forwarded.RemoveAt(0);
+        }
+        var start = new ProcessStartInfo();
+        start.FileName = executable;
+        start.Arguments = JoinArguments(forwarded);
+        start.UseShellExecute = false;
+        start.CreateNoWindow = hideWindow;
+        if (hideWindow) start.WindowStyle = ProcessWindowStyle.Hidden;
+        using (Process process = Process.Start(start))
+        {
+            process.WaitForExit();
+            return process.ExitCode;
         }
     }
 

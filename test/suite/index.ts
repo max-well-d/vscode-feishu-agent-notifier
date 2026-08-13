@@ -18,11 +18,14 @@ export async function run(): Promise<void> {
     "feishuAgentNotifier.configureRemoteControl",
     "feishuAgentNotifier.showRemoteSessions",
     "feishuAgentNotifier.cancelRemoteReplies",
+    "feishuAgentNotifier.openCodex",
+    "feishuAgentNotifier.openClaudeCode",
     "feishuAgentNotifier.installProcessBridge",
     "feishuAgentNotifier.uninstallProcessBridge"
   ]) {
     assert.ok(commands.includes(command), `missing registered command: ${command}`);
   }
+  assert.equal(commands.includes("feishuAgentNotifier.openManagedCodexSession"), false);
 
   const config = vscode.workspace.getConfiguration("feishuAgentNotifier");
   assert.equal(config.get("enabled"), true);

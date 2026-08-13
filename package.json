@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -58,8 +58,8 @@
     "onCommand:feishuAgentNotifier.clearPending",
     "onCommand:feishuAgentNotifier.showRemoteSessions",
     "onCommand:feishuAgentNotifier.cancelRemoteReplies",
-    "onCommand:feishuAgentNotifier.openManagedCodexSession",
-    "onCommand:feishuAgentNotifier.startManagedClaudeSession",
+    "onCommand:feishuAgentNotifier.openCodex",
+    "onCommand:feishuAgentNotifier.openClaudeCode",
     "onCommand:feishuAgentNotifier.installProcessBridge",
     "onCommand:feishuAgentNotifier.uninstallProcessBridge"
   ],
@@ -131,12 +131,12 @@
         "title": "飞书 Agent 通知：取消远程回复任务"
       },
       {
-        "command": "feishuAgentNotifier.openManagedCodexSession",
-        "title": "飞书 Agent 通知：打开本地/飞书共享 Codex 会话"
+        "command": "feishuAgentNotifier.openCodex",
+        "title": "飞书 Agent 通知：打开官方 Codex"
       },
       {
-        "command": "feishuAgentNotifier.startManagedClaudeSession",
-        "title": "飞书 Agent 通知：启动本地/飞书共享 Claude Code 会话"
+        "command": "feishuAgentNotifier.openClaudeCode",
+        "title": "飞书 Agent 通知：打开官方 Claude Code"
       },
       {
         "command": "feishuAgentNotifier.installProcessBridge",

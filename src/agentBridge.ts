@@ -14,7 +14,7 @@ interface BridgeConfig {
 }
 
 void main().catch((error) => {
-  process.stderr.write(`Feishu Agent 进程桥接失败：${(error as Error).stack ?? (error as Error).message}\n`);
+  process.stderr.write(`Feishu Agent bridge failed: ${errorMessage(error)}\n`);
   process.exitCode = 1;
 });
 
@@ -25,10 +25,21 @@ async function main(): Promise<void> {
   const mode = controlArgs[0];
   const configIndex = controlArgs.indexOf("--config");
   const configPath = configIndex >= 0 ? controlArgs[configIndex + 1] : undefined;
+  const fallbackIndex = controlArgs.indexOf("--fallback-executable");
+  const fallbackExecutable = fallbackIndex >= 0 ? controlArgs[fallbackIndex + 1] : undefined;
   if ((mode !== "codex" && mode !== "claude") || !configPath) {
     throw new Error("用法：agent-bridge <codex|claude> --config <bridge.json> -- <Agent 参数>");
   }
-  const config = await readConfig(configPath);
+  let config: BridgeConfig;
+  try {
+    config = await readConfig(configPath);
+  } catch (error) {
+    if (!fallbackExecutable) {
+      throw error;
+    }
+    await runFallback(mode, fallbackExecutable, forwarded, error, true);
+    return;
+  }
   if (mode === "codex") {
     await runCodexBridge(config, forwarded);
   } else {
@@ -38,26 +49,40 @@ async function main(): Promise<void> {
 
 async function runCodexBridge(config: BridgeConfig, args: string[]): Promise<void> {
   if (codexCommand(args) === "app-server") {
-    const descriptor = await ensureSharedCodexServer({
-      dataDirectory: config.dataDirectory,
-      executable: config.realExecutable,
-      appServerArgs: args
-    });
-    await proxyJsonLines(descriptor.endpoint);
+    let socket: WebSocket;
+    try {
+      const descriptor = await ensureSharedCodexServer({
+        dataDirectory: config.dataDirectory,
+        executable: config.realExecutable,
+        appServerArgs: args
+      });
+      socket = await connectWebSocket(descriptor.endpoint);
+    } catch (error) {
+      await runFallback("codex", config.realExecutable, args, error);
+      return;
+    }
+    await proxyJsonLines(socket);
     return;
   }
   if (!isInteractiveCodexInvocation(args) || hasOption(args, "--remote")) {
     process.exitCode = await runInherited(config.realExecutable, args, process.env);
     return;
   }
-  const descriptor = await ensureSharedCodexServer({
-    dataDirectory: config.dataDirectory,
-    executable: config.realExecutable,
-    appServerArgs: ["-c", "features.code_mode_host=true", "app-server"]
-  });
+  let endpoint: string;
+  try {
+    const descriptor = await ensureSharedCodexServer({
+      dataDirectory: config.dataDirectory,
+      executable: config.realExecutable,
+      appServerArgs: ["-c", "features.code_mode_host=true", "app-server"]
+    });
+    endpoint = descriptor.endpoint;
+  } catch (error) {
+    await runFallback("codex", config.realExecutable, args, error);
+    return;
+  }
   process.exitCode = await runInherited(
     config.realExecutable,
-    ["--remote", descriptor.endpoint, ...args],
+    ["--remote", endpoint, ...args],
     { ...process.env, FEISHU_AGENT_BRIDGE_BACKEND: "codex-app-server" }
   );
 }
@@ -71,34 +96,42 @@ async function runClaudeBridge(config: BridgeConfig, forwarded: string[]): Promi
     process.exitCode = await runInherited(executable, args, process.env);
     return;
   }
-  const channelId = crypto.randomUUID();
-  const channelDirectory = path.join(config.dataDirectory, "claude-channels");
-  await fs.mkdir(channelDirectory, { recursive: true, mode: 0o700 });
-  const mcpPath = path.join(channelDirectory, `${channelId}.json`);
-  const mcpConfig = {
-    mcpServers: {
-      "feishu-agent-notifier": {
-        command: config.runtimePath,
-        args: [
-          config.claudeChannelScript,
-          "--data-dir", config.dataDirectory,
-          "--channel-id", channelId
-        ],
-        env: {
-          ELECTRON_RUN_AS_NODE: "1",
-          FEISHU_AGENT_CHANNEL_ID: channelId,
-          FEISHU_AGENT_DATA_DIRECTORY: config.dataDirectory
+  let channelId: string;
+  let mcpPath: string;
+  let injected: string[];
+  try {
+    channelId = crypto.randomUUID();
+    const channelDirectory = path.join(config.dataDirectory, "claude-channels");
+    await fs.mkdir(channelDirectory, { recursive: true, mode: 0o700 });
+    mcpPath = path.join(channelDirectory, `${channelId}.json`);
+    const mcpConfig = {
+      mcpServers: {
+        "feishu-agent-notifier": {
+          command: config.runtimePath,
+          args: [
+            config.claudeChannelScript,
+            "--data-dir", config.dataDirectory,
+            "--channel-id", channelId
+          ],
+          env: {
+            ELECTRON_RUN_AS_NODE: "1",
+            FEISHU_AGENT_CHANNEL_ID: channelId,
+            FEISHU_AGENT_DATA_DIRECTORY: config.dataDirectory
+          }
         }
       }
+    };
+    await fs.writeFile(mcpPath, `${JSON.stringify(mcpConfig, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    injected = [...args];
+    if (!hasOptionValue(injected, "--mcp-config", mcpPath)) {
+      injected.push("--mcp-config", mcpPath);
     }
-  };
-  await fs.writeFile(mcpPath, `${JSON.stringify(mcpConfig, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  const injected = [...args];
-  if (!hasOptionValue(injected, "--mcp-config", mcpPath)) {
-    injected.push("--mcp-config", mcpPath);
-  }
-  if (!hasOptionValue(injected, "--dangerously-load-development-channels", "server:feishu-agent-notifier")) {
-    injected.push("--dangerously-load-development-channels", "server:feishu-agent-notifier");
+    if (!hasOptionValue(injected, "--dangerously-load-development-channels", "server:feishu-agent-notifier")) {
+      injected.push("--dangerously-load-development-channels", "server:feishu-agent-notifier");
+    }
+  } catch (error) {
+    await runFallback("claude", executable, args, error);
+    return;
   }
   try {
     process.exitCode = await runInherited(executable, injected, {
@@ -112,13 +145,17 @@ async function runClaudeBridge(config: BridgeConfig, forwarded: string[]): Promi
   }
 }
 
-async function proxyJsonLines(endpoint: string): Promise<void> {
+async function connectWebSocket(endpoint: string): Promise<WebSocket> {
   const socket = new WebSocket(endpoint);
   await new Promise<void>((resolve, reject) => {
     const onError = (): void => reject(new Error(`无法连接 Codex 共享 App Server：${endpoint}`));
     socket.addEventListener("open", () => resolve(), { once: true });
     socket.addEventListener("error", onError, { once: true });
   });
+  return socket;
+}
+
+async function proxyJsonLines(socket: WebSocket): Promise<void> {
   const input = readline.createInterface({ input: process.stdin, terminal: false });
   input.on("line", (line) => {
     if (line.trim() && socket.readyState === WebSocket.OPEN) {
@@ -143,6 +180,32 @@ async function proxyJsonLines(endpoint: string): Promise<void> {
     });
   });
   await finish;
+}
+
+async function runFallback(
+  mode: "codex" | "claude",
+  executable: string,
+  args: string[],
+  error: unknown,
+  detectClaudeWrapper = false
+): Promise<void> {
+  const wrappedClaudeExecutable = detectClaudeWrapper
+    && mode === "claude"
+    && args[0]
+    && !args[0].startsWith("-")
+    && await isFile(args[0])
+    ? args[0]
+    : undefined;
+  const fallbackExecutable = wrappedClaudeExecutable ?? executable;
+  const fallbackArgs = wrappedClaudeExecutable ? args.slice(1) : args;
+  process.stderr.write(
+    `Feishu Agent ${mode} bridge unavailable; starting the original Agent without remote injection: ${errorMessage(error)}\n`
+  );
+  process.exitCode = await runInherited(fallbackExecutable, fallbackArgs, process.env);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isInteractiveCodexInvocation(args: string[]): boolean {
@@ -201,7 +264,11 @@ function hasOptionValue(args: string[], option: string, expected: string): boole
 
 async function runInherited(executable: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise<number>((resolve, reject) => {
-    const child = spawn(executable, args, { stdio: "inherit", env, windowsHide: false });
+    const child = spawn(executable, args, {
+      stdio: "inherit",
+      env,
+      windowsHide: process.platform === "win32" && env.FEISHU_AGENT_BRIDGE_HIDE_WINDOW === "1"
+    });
     const forwardSignal = (signal: NodeJS.Signals): void => {
       if (!child.killed) {
         child.kill(signal);

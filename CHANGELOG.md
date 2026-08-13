@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.0
+
+- Remove the custom managed Codex webview and its deprecated commands; status actions now open the official Codex and Claude Code interfaces so history, diffs, approvals, and new upstream features remain native.
+- Make bridge setup fail open: unreadable bridge configuration, unavailable shared Codex App Server startup, or failed Claude Channel preparation launches the original Agent with the original arguments.
+- Add a native-launcher fallback path for runtime startup failures on Windows and pass the same fallback executable through Unix launchers.
+- Split the Windows Claude launchers: VS Code receives a GUI-subsystem wrapper that never opens a console window, while terminals retain a console-subsystem `claude-feishu.exe` with interactive stdio.
+- Name native launchers by content hash so an upgrade never overwrites an executable locked by an active Codex/Claude process; switch settings to the new path and remove unlocked legacy launchers on later activation.
+- Reject recursive installations whose recorded real Codex or Claude executable points back into the process-bridge directory, while preserving the pre-bridge setting backup for repair and uninstall.
+- Add fault-injection tests for missing configuration, failed Channel preparation, and recursive bridge targets.
+
 ## 0.16.0
 
 - Add an opt-in process bridge that works with the official VS Code extensions and standalone Codex/Claude Code CLIs; VS Code is now one client rather than the required session owner.

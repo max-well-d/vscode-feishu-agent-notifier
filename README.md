@@ -27,7 +27,7 @@
 - 引用一条插件通知即可精确恢复其 Codex/Claude Code 会话；也可列出、选择、命名历史本地会话或创建新会话。
 - `/new codex` 使用官方 Codex App Server 协议创建持久化会话，支持权威运行状态、完成事件、取消和显式 `/steer`。
 - Codex App Server 现在由独立 Session Broker 持有，不再属于 Extension Host；VS Code 窗口重载后会重连同一 Broker，并补取重载期间的真实完成结果。
-- 可运行“打开本地/飞书共享 Codex 会话”，在 VS Code 面板和飞书中共同操作同一个托管 thread；界面会显示“本地优先/远程接管”和输入来源。
+- 状态中心只负责打开官方 Codex/Claude Code 界面，不再维护一套功能不完整的自制对话面板；本地历史、diff、审批和模型功能继续由官方客户端呈现。
 - `/new cc` 会启动原版 Claude Code CLI，并通过官方 Channel 协议把飞书输入注入这个正在运行的本地会话；Hook 会把临时 Channel 路由迁移到真实 Claude session ID。
 - Codex 与 Claude Code 权限请求可同步到本地和飞书；飞书使用 `/approve <ID>` 或 `/deny <ID>` 回答，先到的有效回答生效。
 - 外部 VS Code/CLI 会话只有在收到权威完成事件后才能续写；不再根据 transcript 文件静默时间猜测任务结束。
@@ -53,7 +53,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.16.0.vsix
+code --install-extension .\feishu-agent-notifier-0.17.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -109,6 +109,12 @@ code --install-extension .\feishu-agent-notifier-0.16.0.vsix
 
 Codex 启动器把官方 VS Code App Server 的 stdio 数据代理到一个独立的官方 App Server WebSocket；该服务只监听随机的 `127.0.0.1` 端口。独立 Codex TUI 通过官方 `--remote` 参数连接同一服务。Claude Code 启动器保留原版二进制和全部参数，仅为会话进程注入本插件的官方 Channel 配置与随机 Channel ID。
 
+Windows 上的 Claude 启动器分为两个：写入 `claudeCode.claudeProcessWrapper` 的 `claude-feishu-wrapper-<hash>.exe` 使用 GUI 子系统，不会在打开官方 Claude 面板时额外弹出 `claude.exe` 控制台窗口；日志中给出的 `claude-feishu-<hash>.exe` 保留控制台子系统，供普通终端交互使用。
+
+Windows 原生启动器带有内容哈希文件名。升级时会生成新文件并切换设置，不会覆盖正在被 Agent 进程锁定的旧 EXE；旧进程可自然完成，未再使用的旧启动器会在后续激活时清理。
+
+桥接采用 fail-open：共享 App Server 未能启动、配置损坏或 Claude Channel 注入准备失败时，会输出一条本地警告并立即以原参数启动原版 Codex/Claude Code。安装器也会拒绝把“真实 Agent 路径”配置为桥接启动器本身，避免递归启动。桥接失败最多使该次飞书注入不可用，不应阻止官方 Agent 启动。
+
 命令执行后，输出日志会给出可直接在普通终端运行的 `codex-feishu` / `claude-feishu` 启动器绝对路径。因此桥接不依赖 VS Code 终端；VS Code 关闭后本地 Agent 仍可运行，但飞书长连接目前仍需要至少一个扩展窗口在线。
 
 兼容边界：Codex 的共享 App Server、`--remote` 与 App Server JSON-RPC 是公开接口；OpenAI VS Code 的 `chatgpt.cliExecutable` 当前标注为开发设置，未来扩展升级可能改变启动参数，完整自检会报告桥接状态。Claude Code 使用公开的 `claudeProcessWrapper` 和 Channel 参数。已经在桥接安装前启动的进程不能热注入：空闲的历史 Codex 可保持原 ID 接管；正在被旧 App Server 写入的 Codex 使用安全分支；历史 Claude Code 应在 turn 结束后通过 `claude-feishu --resume <完整 Session ID>` 重开，正在执行的 Claude turn 不会被冒险迁移。
@@ -161,10 +167,10 @@ Codex 启动器把官方 VS Code App Server 的 stdio 数据代理到一个独�
 
 会话分为两类：
 
-- **共享托管**：`/new codex`、本地共享面板和已桥接的官方 Codex 客户端连接同一个 App Server；每轮使用 `turn/start`，完成以 `turn/completed` 为准。`/new cc` 和已桥接的 Claude Code 进程使用官方 Channel 将本机与飞书输入送入同一个真实 Session ID。两者都不会为每条飞书消息另开一个 resume 进程。
+- **共享托管**：`/new codex` 和已桥接的官方 Codex 客户端连接同一个 App Server；每轮使用 `turn/start`，完成以 `turn/completed` 为准。`/new cc` 和已桥接的 Claude Code 进程使用官方 Channel 将本机与飞书输入送入同一个真实 Session ID。两者都不会为每条飞书消息另开一个 resume 进程，本地操作继续使用官方界面或原版 CLI/TUI。
 - **外部会话**：由桥接安装前的官方 VS Code 插件或普通 CLI 创建。插件只会在 Stop/task-complete 等权威事件确认结束后处理回复。外部 Codex 先尝试原 ID 接入共享 App Server，检测到旧 writer 冲突才创建精确 turn 分支；外部 Claude Code 仍使用官方 `--fork-session` 兼容路径。仅从磁盘发现、没有完成证据的会话会被拒绝。
 
-要让之后启动的官方 VS Code/CLI 会话天然共享，安装进程桥接；也可以继续从插件状态菜单显式启动“共享 Codex 会话”或“共享 Claude Code”。插件不会向已经运行的终端发送按键，也不会事后夺取已有进程的 stdio。迁移只发生在安全的 turn 边界。
+要让之后启动的官方 VS Code/CLI 会话天然共享，安装进程桥接。插件状态菜单中的 Codex/Claude Code 入口只打开相应官方界面，不创建替代 UI。插件不会向已经运行的终端发送按键，也不会事后夺取已有进程的 stdio；迁移只发生在安全的 turn 边界。
 
 Session Broker 仅监听 `127.0.0.1`，使用随机 bearer token，并把普通状态写入 `dataDirectory`。它独立于 Extension Host，因此窗口重载不会停止已托管的 Codex turn；重载期间完成的结果进入本地收件箱，新 Host 连接后才确认和投递。Broker 重启时，遗留的 `running` 只能恢复为“状态未知”，不会伪造仍在执行或已经完成。
 
