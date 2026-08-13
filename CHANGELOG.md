@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.3
+
+- Attach remote replies to a thread already loaded by the same shared Codex App Server instead of issuing a second `thread/resume` writer.
+- Never fall back to a CLI writer or silent branch when a shared VS Code Codex session reports a delivery error.
+- Add Broker protocol capability negotiation and safely replace an idle incompatible Broker during upgrades, preventing old routing logic from surviving a new Agent Link install.
+- Cover exact same-session attachment and no-second-writer behavior with regression tests.
+
 ## 0.18.2
 
 - Windows Agent Hooks 改为通过 GUI 子系统的原生启动器静默执行，避免每条 Codex/Claude Code 消息触发控制台或 PowerShell 窗口闪烁。

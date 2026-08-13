@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { AgentReplyResult, ManagedCodexExecutor } from "./agentReply";
-import { BrokerCompletion, BrokerDescriptor, BrokerSnapshot, BrokerTurnResult } from "./brokerProtocol";
+import { BROKER_PROTOCOL_VERSION, BrokerCompletion, BrokerDescriptor, BrokerSnapshot, BrokerTurnResult } from "./brokerProtocol";
 import { ClaudeChannelEvent, ClaudeChannelOutbound } from "./brokerProtocol";
 import { AppServerState } from "./codexAppServer";
 import { CodexThreadMetadata } from "./codexAppServer";
@@ -26,7 +26,7 @@ export interface SessionBrokerClientOptions {
 
 export class SessionBrokerClient implements ManagedCodexExecutor {
   private token: string | undefined;
-  private descriptor: BrokerDescriptor | undefined;
+  private descriptor: StoredBrokerDescriptor | undefined;
   private snapshot: BrokerSnapshot | undefined;
   private starting: Promise<void> | undefined;
   private _lastError: string | undefined;
@@ -230,15 +230,28 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
       this.descriptor = existing;
       try {
         this.snapshot = await this.call<BrokerSnapshot>("GET", "/health", undefined, undefined, 2_000, false);
-        this._lastError = undefined;
-        return;
-      } catch {
+      } catch (error) {
         if (processIsAlive(existing.pid)) {
-          throw new Error(`Session Broker 进程 ${existing.pid} 存在，但健康检查失败`);
+          throw new Error(`Session Broker 进程 ${existing.pid} 存在，但健康检查失败：${(error as Error).message}`);
         }
         this.descriptor = undefined;
         await fs.rm(descriptorPath, { force: true });
         await fs.rm(path.join(this.options.dataDirectory, "broker.lock"), { force: true });
+      }
+      if (this.snapshot && isCompatibleBroker(existing, this.snapshot)) {
+        this._lastError = undefined;
+        return;
+      }
+      if (this.snapshot) {
+        await retireIncompatibleBroker(
+          existing,
+          this.snapshot,
+          descriptorPath,
+          path.join(this.options.dataDirectory, "broker.lock"),
+          this.options.log
+        );
+        this.descriptor = undefined;
+        this.snapshot = undefined;
       }
     }
     const executable = await this.options.executable();
@@ -259,12 +272,15 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
     while (Date.now() < deadline) {
       await delay(100);
       const descriptor = await readDescriptor(descriptorPath);
-      if (!descriptor) {
+      if (!descriptor || descriptor.protocolVersion !== BROKER_PROTOCOL_VERSION) {
         continue;
       }
       this.descriptor = descriptor;
       try {
         this.snapshot = await this.call<BrokerSnapshot>("GET", "/health", undefined, undefined, 1_000, false);
+        if (!isCompatibleBroker(descriptor, this.snapshot)) {
+          throw new Error(`Session Broker protocol mismatch: ${descriptor.protocolVersion}`);
+        }
         this._lastError = undefined;
         this.options.log?.info(`Session Broker 已就绪（PID ${descriptor.pid}）。`);
         return;
@@ -335,13 +351,65 @@ async function readOrCreateToken(filePath: string): Promise<string> {
   return token;
 }
 
-async function readDescriptor(filePath: string): Promise<BrokerDescriptor | undefined> {
+type StoredBrokerDescriptor = Omit<BrokerDescriptor, "protocolVersion"> & { protocolVersion: number };
+
+async function readDescriptor(filePath: string): Promise<StoredBrokerDescriptor | undefined> {
   try {
-    const descriptor = JSON.parse(await fs.readFile(filePath, "utf8")) as BrokerDescriptor;
-    return descriptor.protocolVersion === 1 && descriptor.port > 0 ? descriptor : undefined;
+    const descriptor = JSON.parse(await fs.readFile(filePath, "utf8")) as StoredBrokerDescriptor;
+    return Number.isInteger(descriptor.protocolVersion)
+      && Number.isInteger(descriptor.pid)
+      && descriptor.pid > 0
+      && Number.isInteger(descriptor.port)
+      && descriptor.port > 0
+      ? descriptor
+      : undefined;
   } catch {
     return undefined;
   }
+}
+
+function isCompatibleBroker(descriptor: StoredBrokerDescriptor, snapshot: BrokerSnapshot): boolean {
+  return descriptor.protocolVersion === BROKER_PROTOCOL_VERSION
+    && snapshot.protocolVersion === BROKER_PROTOCOL_VERSION
+    && snapshot.pid === descriptor.pid
+    && snapshot.capabilities?.sameServerThreadAttach === true;
+}
+
+async function retireIncompatibleBroker(
+  descriptor: StoredBrokerDescriptor,
+  snapshot: BrokerSnapshot,
+  descriptorPath: string,
+  lockPath: string,
+  log?: SessionBrokerClientOptions["log"]
+): Promise<void> {
+  if (snapshot.pid !== descriptor.pid) {
+    throw new Error("Session Broker descriptor does not match the authenticated process");
+  }
+  if ((snapshot.activeTurns ?? 0) > 0) {
+    throw new Error(`Session Broker ${descriptor.version} is incompatible and still has an active turn; retry after it completes`);
+  }
+  if (descriptor.pid === process.pid) {
+    throw new Error("Refusing to replace the current process as an incompatible Session Broker");
+  }
+  log?.info(`Replacing incompatible Session Broker ${descriptor.version} (PID ${descriptor.pid}).`);
+  if (processIsAlive(descriptor.pid)) {
+    try {
+      process.kill(descriptor.pid, "SIGTERM");
+    } catch (error) {
+      if (processIsAlive(descriptor.pid)) {
+        throw error;
+      }
+    }
+    const deadline = Date.now() + 5_000;
+    while (processIsAlive(descriptor.pid) && Date.now() < deadline) {
+      await delay(50);
+    }
+  }
+  if (processIsAlive(descriptor.pid)) {
+    throw new Error(`Incompatible Session Broker ${descriptor.pid} did not stop`);
+  }
+  await fs.rm(descriptorPath, { force: true });
+  await fs.rm(lockPath, { force: true });
 }
 
 function processIsAlive(pid: number): boolean {

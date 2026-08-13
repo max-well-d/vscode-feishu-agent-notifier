@@ -17,7 +17,7 @@ Broker 只监听随机回环端口，描述文件和 256-bit token 放在用户�
 - Codex：公开 App Server JSON-RPC、Hook 与 transcript 兼容发现。
 - Claude Code：公开 Hook、CLI resume/fork 与 Channel 协议。
 
-文件发现只提供候选 session，不能充当权威完成事件。外部 session 只有收到权威完成通知后才允许远程续写；活动 writer 冲突时使用精确 turn 的持久化安全分支。
+文件发现只提供候选 session，不能充当权威完成事件。外部 session 只有收到权威完成通知后才允许远程续写；桥接安装前的外部活动 writer 冲突时使用精确 turn 的持久化安全分支。已桥接的共享 session 始终复用同一 App Server 中的已加载线程，投递失败时不会退回第二 writer 或分支。
 
 ### Channel Registry
 

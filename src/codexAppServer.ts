@@ -187,13 +187,7 @@ export class CodexAppServerClient {
 
   public async adoptThread(source: AgentSession, policy: RemoteExecutionPolicy): Promise<AgentSession> {
     await this.ensureStarted();
-    const result = await this.request("thread/resume", {
-      threadId: source.sessionId,
-      cwd: source.cwd,
-      approvalPolicy: policy === "inherit" ? "on-request" : "never",
-      ...(policy === "planOnly" ? { sandbox: "read-only" } : {})
-    });
-    const thread = objectValue(result.thread);
+    const thread = await this.attachOrResumeThread(source, policy);
     const threadId = stringValue(thread?.id);
     if (!threadId || threadId !== source.sessionId) {
       throw new Error("Codex App Server 无法无损接管原会话");
@@ -357,13 +351,41 @@ export class CodexAppServerClient {
     if (this.loadedThreads.has(session.sessionId)) {
       return;
     }
-    await this.request("thread/resume", {
+    await this.attachOrResumeThread(session, policy);
+  }
+
+  /**
+   * Reuse a thread already loaded by the shared App Server. `thread/resume` is
+   * only valid for a persisted thread that is not currently loaded; issuing it
+   * for the live VS Code thread attempts to create a second writer.
+   */
+  private async attachOrResumeThread(
+    session: Pick<AgentSession, "sessionId" | "cwd">,
+    policy: RemoteExecutionPolicy
+  ): Promise<JsonObject> {
+    const read = await this.request("thread/read", {
+      threadId: session.sessionId,
+      includeTurns: false
+    });
+    const existing = objectValue(read.thread);
+    const status = stringValue(objectValue(existing?.status)?.type);
+    if (stringValue(existing?.id) === session.sessionId && status && status !== "notLoaded") {
+      this.loadedThreads.add(session.sessionId);
+      return existing as JsonObject;
+    }
+
+    const resumed = await this.request("thread/resume", {
       threadId: session.sessionId,
       cwd: session.cwd,
-      approvalPolicy: "never",
+      approvalPolicy: policy === "inherit" ? "on-request" : "never",
       ...(policy === "planOnly" ? { sandbox: "read-only" } : {})
     });
+    const thread = objectValue(resumed.thread);
+    if (stringValue(thread?.id) !== session.sessionId) {
+      throw new Error("Codex App Server returned a different thread while attaching the shared session");
+    }
     this.loadedThreads.add(session.sessionId);
+    return thread as JsonObject;
   }
 
   private async readThreadStatus(threadId: string): Promise<string> {

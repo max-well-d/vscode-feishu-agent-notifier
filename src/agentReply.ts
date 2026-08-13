@@ -103,11 +103,9 @@ export class AgentReplyRunner {
       if (!this.managedCodex) {
         throw new Error("Codex App Server 托管执行器未初始化");
       }
-      try {
-        return await this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs, remoteOrigin(job.chatId));
-      } catch (error) {
-        return this.runForkFallback(job, normalizeError(error), signal);
-      }
+      // This session is already owned by the App Server shared with VS Code.
+      // Never open a second CLI writer or silently fork it after a delivery error.
+      return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs, remoteOrigin(job.chatId));
     }
     if (job.session.source === "claude-code"
       && job.session.ownership === "managed"

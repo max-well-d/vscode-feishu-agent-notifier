@@ -2,8 +2,10 @@ import { AgentSession, InputOrigin } from "./types";
 import { AgentEvent } from "./types";
 import { HandoffState } from "./handoff";
 
+export const BROKER_PROTOCOL_VERSION = 2 as const;
+
 export interface BrokerDescriptor {
-  protocolVersion: 1;
+  protocolVersion: typeof BROKER_PROTOCOL_VERSION;
   pid: number;
   port: number;
   startedAt: string;
@@ -11,6 +13,11 @@ export interface BrokerDescriptor {
 }
 
 export interface BrokerSnapshot {
+  protocolVersion: typeof BROKER_PROTOCOL_VERSION;
+  version: string;
+  capabilities: {
+    sameServerThreadAttach: true;
+  };
   state: "starting" | "ready" | "failed";
   codexState: "stopped" | "starting" | "ready" | "failed";
   codexError?: string;

@@ -220,6 +220,43 @@ test("adopts an external Codex session without changing its session id when the 
   assert.equal(forkAttempted, false);
 });
 
+test("never forks or opens a second writer when a shared Codex delivery fails", async () => {
+  const source: AgentSession = {
+    ...codex,
+    ownership: "managed",
+    managedBackend: "codex-app-server",
+    completionEvidence: "authoritative"
+  };
+  let forkAttempted = false;
+  const managed: ManagedCodexExecutor = {
+    forkThread: async () => {
+      forkAttempted = true;
+      throw new Error("must not fork");
+    },
+    runTurn: async () => {
+      throw new Error("thread codex-session already has an active writer");
+    }
+  };
+  const runner = new AgentReplyRunner(10_000, undefined, async () => "codex", managed);
+  const job: AgentReplyJob = {
+    id: "job-shared-conflict",
+    chatId: "chat",
+    inboundMessageId: "inbound",
+    session: { ...source },
+    originalSession: { ...source },
+    anchorTurnId: "source-turn",
+    prompt: "continue",
+    policy: "inherit"
+  };
+
+  await assert.rejects(
+    runner.run(job, new AbortController().signal),
+    /already has an active writer/
+  );
+  assert.equal(forkAttempted, false);
+  assert.equal(job.session.sessionId, source.sessionId);
+});
+
 test("rejects an external Codex reply without an exact turn anchor before opening the session", async () => {
   const source: AgentSession = {
     ...codex,

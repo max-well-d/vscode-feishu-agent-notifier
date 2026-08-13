@@ -124,6 +124,33 @@ test("owns a Codex App Server thread and waits for authoritative turn completion
   client.dispose();
 });
 
+test("attaches to an already loaded VS Code thread without resuming a second writer", async () => {
+  const requests: ProtocolMessage[] = [];
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "shared-test",
+    spawnImpl: fakeAppServer(requests)
+  });
+  const source = {
+    source: "codex" as const,
+    sessionId: "thread-external",
+    cwd: "D:\\work\\repo",
+    project: "repo",
+    lastSeenAt: new Date().toISOString(),
+    status: "completed" as const,
+    ownership: "external" as const,
+    completionEvidence: "authoritative" as const
+  };
+
+  const adopted = await client.adoptThread(source, "inherit");
+
+  assert.equal(adopted.sessionId, source.sessionId);
+  assert.equal(adopted.ownership, "managed");
+  assert.equal(requests.some((request) => request.method === "thread/read"), true);
+  assert.equal(requests.some((request) => request.method === "thread/resume"), false);
+  client.dispose();
+});
+
 test("creates a named persistent fork at the exact completed turn", async () => {
   const requests: ProtocolMessage[] = [];
   const client = new CodexAppServerClient({

@@ -78,7 +78,7 @@ npm run desktop:package
 - Codex 与 Claude Code 权限请求可同步到本地和飞书；飞书使用 `/approve <ID>` 或 `/deny <ID>` 回答，先到的有效回答生效。
 - 外部 VS Code/CLI 会话只有在收到权威完成事件后才能续写；不再根据 transcript 文件静默时间猜测任务结束。
 - 可选进程桥接让官方 Codex VS Code、独立 Codex TUI、Claude Code VS Code、独立 Claude Code CLI 与飞书使用相同后端；VS Code 不再是会话所有者，只是客户端之一。
-- 历史 Codex session 会先按原 Session ID 无损接入共享 App Server；旧私有 App Server 仍持有 writer 时才从被引用的精确 turn 创建安全分支。
+- 已桥接的 Codex session 会按原 Session ID 直接复用 VS Code 正在连接的共享 App Server，不再执行第二次 `thread/resume`；只有桥接安装前创建的真正外部历史会话才保留精确 turn 安全分支兼容路径。
 - 卡片副标题显示真实 session 名称、短 session ID、项目和时间；`/alias` 设置的本地别名优先显示。
 - 远程回复按会话串行执行，支持超时、取消、重复事件去重和最多 20 条排队保护。
 - 远程执行默认关闭；可选择只读规划，或显式继承本机 Agent 权限。用户、群聊和群聊 @ 均有独立白名单策略。
@@ -99,7 +99,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.18.2.vsix
+code --install-extension .\feishu-agent-notifier-0.18.3.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -214,13 +214,13 @@ Windows 原生启动器带有内容哈希文件名。升级时会生成新文件
 会话分为两类：
 
 - **共享托管**：`/new codex` 和已桥接的官方 Codex 客户端连接同一个 App Server；每轮使用 `turn/start`，完成以 `turn/completed` 为准。`/new cc` 和已桥接的 Claude Code 进程使用官方 Channel 将本机与飞书输入送入同一个真实 Session ID。两者都不会为每条飞书消息另开一个 resume 进程，本地操作继续使用官方界面或原版 CLI/TUI。
-- **外部会话**：由桥接安装前的官方 VS Code 插件或普通 CLI 创建。插件只会在 Stop/task-complete 等权威事件确认结束后处理回复。外部 Codex 先尝试原 ID 接入共享 App Server，检测到旧 writer 冲突才创建精确 turn 分支；外部 Claude Code 仍使用官方 `--fork-session` 兼容路径。仅从磁盘发现、没有完成证据的会话会被拒绝。
+- **外部会话**：由桥接安装前的官方 VS Code 插件或普通 CLI 创建。插件只会在 Stop/task-complete 等权威事件确认结束后处理回复。外部 Codex 先尝试原 ID 接入共享 App Server，检测到旧 writer 冲突才创建精确 turn 分支；外部 Claude Code 仍使用官方 `--fork-session` 兼容路径。该兼容逻辑不会用于已标记为共享托管的会话；共享投递失败会原样报错，不会静默启动第二 writer 或改绑分支。仅从磁盘发现、没有完成证据的会话会被拒绝。
 
 要让之后启动的官方 VS Code/CLI 会话天然共享，安装进程桥接。插件状态菜单中的 Codex/Claude Code 入口只打开相应官方界面，不创建替代 UI。插件不会向已经运行的终端发送按键，也不会事后夺取已有进程的 stdio；迁移只发生在安全的 turn 边界。
 
 Session Broker 仅监听 `127.0.0.1`，使用随机 bearer token，并把普通状态写入 `dataDirectory`。它独立于 Extension Host，因此窗口重载不会停止已托管的 Codex turn；重载期间完成的结果进入本地收件箱，新 Host 连接后才确认和投递。Broker 重启时，遗留的 `running` 只能恢复为“状态未知”，不会伪造仍在执行或已经完成。
 
-外部 Codex 会话会先通过共享 App Server 的 `thread/resume` 接管同一个 Session ID；成功后本地和飞书继续同一历史。若旧版/未桥接 App Server 仍持有唯一 writer，远程分支会严格沿用通知中记录的原始工作目录，不会切换到某个子仓库，也不会改变 `planOnly` / `inherit` 权限策略。
+Codex 会话接入时会先用 `thread/read` 查询共享 App Server：状态为 `idle` 或 `active` 说明线程已经由同一个服务加载，直接复用且不调用 `thread/resume`；只有状态为 `notLoaded` 的持久化外部线程才执行 `thread/resume`。若旧版/未桥接 App Server 仍持有唯一 writer，远程分支会严格沿用通知中记录的原始工作目录，不会切换到某个子仓库，也不会改变 `planOnly` / `inherit` 权限策略。
 
 扩展不会终止旧 IDE App Server，也不会强占外部 Codex writer。只有原 ID 接管失败时，才使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入私有 JSON 会话索引。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时会安全失败。
 

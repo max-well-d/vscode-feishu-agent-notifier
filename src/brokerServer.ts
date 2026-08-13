@@ -7,6 +7,7 @@ import {
   BrokerApproval,
   BrokerCompletion,
   BrokerDescriptor,
+  BROKER_PROTOCOL_VERSION,
   BrokerSnapshot,
   BrokerTurnRequest,
   ClaudeChannelEvent,
@@ -85,7 +86,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
     throw new Error("Broker 未获得 TCP 端口");
   }
   const descriptor: BrokerDescriptor = {
-    protocolVersion: 1,
+    protocolVersion: BROKER_PROTOCOL_VERSION,
     pid: process.pid,
     port: address.port,
     startedAt,
@@ -429,6 +430,9 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
 
   function snapshot(): BrokerSnapshot {
     return {
+      protocolVersion: BROKER_PROTOCOL_VERSION,
+      version: options.version,
+      capabilities: { sameServerThreadAttach: true },
       state: codexState === "failed" ? "failed" : "ready",
       codexState,
       codexError,
