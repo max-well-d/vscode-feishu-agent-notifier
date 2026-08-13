@@ -118,6 +118,26 @@ test("deploys a content-addressed hidden console host for shared Codex descendan
       executable: installation.windowsConsoleHost
     });
 
+    const treeRoot = spawn(process.execPath, [
+      "-e",
+      "const{spawn}=require('child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});console.log(c.pid);setInterval(()=>{},1000)"
+    ], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    const childPid = await new Promise<number>((resolve, reject) => {
+      treeRoot.stdout.once("data", (chunk) => resolve(Number(chunk.toString("utf8").trim())));
+      treeRoot.once("error", reject);
+    });
+    const terminator = spawn(installation.windowsConsoleHost as string, ["--terminate-tree", String(treeRoot.pid)], {
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    const terminateCode = await new Promise<number | null>((resolve, reject) => {
+      terminator.once("error", reject);
+      terminator.once("close", resolve);
+    });
+    assert.equal(terminateCode, 0);
+    assert.equal(processAlive(treeRoot.pid as number), false);
+    assert.equal(processAlive(childPid), false);
+
     const stale = path.join(installation.root, "hidden-console-host-000000000000.exe");
     await fs.writeFile(stale, "stale", "utf8");
     const removed = await cleanupLegacyProcessBridgeFiles(dataDirectory, [
@@ -130,6 +150,15 @@ test("deploys a content-addressed hidden console host for shared Codex descendan
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function runBridge(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const bridgeEntry = path.resolve(__dirname, "../src/agentBridge.js");

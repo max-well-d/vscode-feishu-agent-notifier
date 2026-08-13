@@ -70,6 +70,10 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
     return snapshot;
   }
 
+  public async reconnectCodex(): Promise<void> {
+    await this.call("POST", "/codex/reconnect", {});
+  }
+
   public async startThread(
     cwd: string,
     project: string,
@@ -372,7 +376,9 @@ function isCompatibleBroker(descriptor: StoredBrokerDescriptor, snapshot: Broker
   return descriptor.protocolVersion === BROKER_PROTOCOL_VERSION
     && snapshot.protocolVersion === BROKER_PROTOCOL_VERSION
     && snapshot.pid === descriptor.pid
-    && snapshot.capabilities?.sameServerThreadAttach === true;
+    && snapshot.capabilities?.sameServerThreadAttach === true
+    && snapshot.capabilities?.exactTurnRecovery === true
+    && snapshot.capabilities?.ownedTurnCancellation === true;
 }
 
 async function retireIncompatibleBroker(

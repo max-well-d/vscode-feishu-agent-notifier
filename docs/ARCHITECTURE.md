@@ -19,6 +19,8 @@ Broker 只监听随机回环端口，描述文件和 256-bit token 放在用户�
 
 文件发现只提供候选 session，不能充当权威完成事件。外部 session 只有收到权威完成通知后才允许远程续写；桥接安装前的外部活动 writer 冲突时使用精确 turn 的持久化安全分支。已桥接的共享 session 始终复用同一 App Server 中的已加载线程，投递失败时不会退回第二 writer 或分支。
 
+Broker 同时使用 App Server 完成事件和精确 `thread/read` 状态恢复；漏失单个 WebSocket 通知不会让队列永久停留在运行中。Broker 发起的远程 turn 与观察到的本地 turn 分开记录，因此取消和 steer 只作用于正确的远程 turn。Windows 遗留共享服务会等待所有已加载线程空闲后迁移到原生无窗口宿主。
+
 ### Channel Registry
 
 每个 Channel 实现同一接口：manifest、配置校验、start/stop、send、可选 reply。核心将入站消息规范化为 `ChannelInboundMessage`，并用 `channelId:conversationId` 作为路由作用域。

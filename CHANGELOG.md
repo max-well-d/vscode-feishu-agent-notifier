@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.4
+
+- Recover exact Codex turn completion with `thread/read` polling when a shared App Server websocket notification is missed, so the remote queue advances promptly after the real turn finishes.
+- Separate observed local turns from Broker-owned remote turns; `/cancel` and `/steer` can no longer target a newer local VS Code turn by mistake.
+- Bound completion callback delivery so a messaging-channel timeout cannot hold the Agent execution queue indefinitely.
+- Migrate a legacy visible-console shared Codex service only after every loaded thread is idle, then relaunch it under the native hidden-console job while preserving persisted Session IDs and history.
+- Add native process-tree termination for the one-time Windows migration and bump Broker capabilities to protocol v3.
+
 ## 0.18.3
 
 - Attach remote replies to a thread already loaded by the same shared Codex App Server instead of issuing a second `thread/resume` writer.

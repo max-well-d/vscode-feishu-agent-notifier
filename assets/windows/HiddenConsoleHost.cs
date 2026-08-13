@@ -15,6 +15,7 @@ public static class HiddenConsoleHost
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint TH32CS_SNAPPROCESS = 0x00000002;
+    private const uint PROCESS_TERMINATE = 0x0001;
     private const uint EVENT_OBJECT_SHOW = 0x8002;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
@@ -29,6 +30,11 @@ public static class HiddenConsoleHost
         {
             int rootPid;
             return Int32.TryParse(args[1], out rootPid) ? HideLegacyTree(rootPid) : 64;
+        }
+        if (args.Length == 2 && args[0] == "--terminate-tree")
+        {
+            int rootPid;
+            return Int32.TryParse(args[1], out rootPid) ? TerminateTree(rootPid) : 64;
         }
         int first = args.Length > 0 && args[0] == "--" ? 1 : 0;
         if (args.Length <= first)
@@ -164,6 +170,36 @@ public static class HiddenConsoleHost
         catch
         {
             return false;
+        }
+    }
+
+    private static int TerminateTree(int rootPid)
+    {
+        HashSet<uint> tree = ReadProcessTree((uint)rootPid);
+        foreach (uint pid in tree)
+        {
+            if (pid == (uint)rootPid)
+                continue;
+            TerminatePid(pid);
+        }
+        TerminatePid((uint)rootPid);
+        for (int attempt = 0; attempt < 100 && ProcessExists(rootPid); attempt++)
+            Thread.Sleep(50);
+        return ProcessExists(rootPid) ? 1 : 0;
+    }
+
+    private static void TerminatePid(uint pid)
+    {
+        IntPtr process = OpenProcess(PROCESS_TERMINATE, false, pid);
+        if (process == IntPtr.Zero)
+            return;
+        try
+        {
+            TerminateProcess(process, 0);
+        }
+        finally
+        {
+            CloseHandle(process);
         }
     }
 
@@ -410,6 +446,9 @@ public static class HiddenConsoleHost
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);

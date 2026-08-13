@@ -11,13 +11,20 @@ interface ProtocolMessage {
   params?: Record<string, unknown>;
 }
 
-function fakeAppServer(requests: ProtocolMessage[]): typeof spawn {
+interface FakeAppServerOptions {
+  omitCompletionNotification?: boolean;
+  pollCompletedTurn?: boolean;
+  emitForeignTurn?: boolean;
+}
+
+function fakeAppServer(requests: ProtocolMessage[], options: FakeAppServerOptions = {}): typeof spawn {
   return (() => {
     const events = new EventEmitter();
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     let buffer = "";
+    let turnStarted = false;
     const send = (value: unknown): void => {
       stdout.write(`${JSON.stringify(value)}\n`);
     };
@@ -50,19 +57,40 @@ function fakeAppServer(requests: ProtocolMessage[]): typeof spawn {
         } else if (request.method === "thread/resume") {
           send({ id: request.id, result: { thread: { id: request.params?.threadId, sessionId: request.params?.threadId } } });
         } else if (request.method === "thread/read") {
+          const includeTurns = request.params?.includeTurns === true;
           send({
             id: request.id,
             result: {
               thread: {
                 id: request.params?.threadId,
                 name: request.params?.threadId === "thread-external" ? "External title" : null,
-                status: { type: "idle" }
+                status: { type: turnStarted && !options.pollCompletedTurn ? "active" : "idle" },
+                ...(includeTurns && options.pollCompletedTurn && turnStarted
+                  ? {
+                      turns: [{
+                        id: "turn-managed",
+                        status: "completed",
+                        error: null,
+                        items: [{ type: "agentMessage", text: "recovered result" }]
+                      }]
+                    }
+                  : {})
               }
             }
           });
         } else if (request.method === "turn/start") {
           const threadId = request.params?.threadId;
+          turnStarted = true;
           send({ id: request.id, result: { turn: { id: "turn-managed", status: "inProgress" } } });
+          if (options.emitForeignTurn) {
+            setImmediate(() => send({
+              method: "turn/started",
+              params: { threadId, turn: { id: "turn-local", status: "inProgress" } }
+            }));
+          }
+          if (options.omitCompletionNotification) {
+            continue;
+          }
           setImmediate(() => {
             send({
               method: "item/completed",
@@ -148,6 +176,51 @@ test("attaches to an already loaded VS Code thread without resuming a second wri
   assert.equal(adopted.ownership, "managed");
   assert.equal(requests.some((request) => request.method === "thread/read"), true);
   assert.equal(requests.some((request) => request.method === "thread/resume"), false);
+  client.dispose();
+});
+
+test("recovers a completed turn by polling when the websocket completion is missed", async () => {
+  const requests: ProtocolMessage[] = [];
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "poll-test",
+    spawnImpl: fakeAppServer(requests, {
+      omitCompletionNotification: true,
+      pollCompletedTurn: true
+    })
+  });
+  const session = await client.startThread("D:\\work\\repo", "repo", "inherit");
+
+  const result = await client.runTurn(session, "continue", "inherit", new AbortController().signal, 5_000);
+
+  assert.equal(result.turnId, "turn-managed");
+  assert.equal(result.outputTail, "recovered result");
+  assert.equal(requests.some((request) => request.method === "thread/read" && request.params?.includeTurns === true), true);
+  client.dispose();
+});
+
+test("cancel targets only the broker-owned turn when a local turn is observed", async () => {
+  const requests: ProtocolMessage[] = [];
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "ownership-test",
+    spawnImpl: fakeAppServer(requests, {
+      omitCompletionNotification: true,
+      pollCompletedTurn: true,
+      emitForeignTurn: true
+    })
+  });
+  const session = await client.startThread("D:\\work\\repo", "repo", "inherit");
+  const running = client.runTurn(session, "continue", "inherit", new AbortController().signal, 5_000);
+  while (!requests.some((request) => request.method === "turn/start")) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await client.interruptSession(session.sessionId), true);
+  const interrupt = requests.find((request) => request.method === "turn/interrupt");
+  assert.equal(interrupt?.params?.turnId, "turn-managed");
+  await running;
   client.dispose();
 });
 

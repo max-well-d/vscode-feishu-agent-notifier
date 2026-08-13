@@ -333,17 +333,42 @@ export class AgentReplyQueue {
   }
 
   private async execute(item: PendingJob): Promise<void> {
+    let outcome: AgentReplyResult | Error;
     try {
       await this.callbacks.waitUntilReady?.(item.job, item.controller.signal);
       await this.callbacks.onStarted?.(item.job);
       const result = await this.runner.run(item.job, item.controller.signal);
       item.resolve(result);
-      await this.callbacks.onFinished?.(item.job, result);
+      outcome = result;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
       item.reject(normalized);
-      await this.callbacks.onFinished?.(item.job, normalized);
+      outcome = normalized;
     }
+    try {
+      await settleWithin(
+        Promise.resolve(this.callbacks.onFinished?.(item.job, outcome)),
+        15_000
+      );
+    } catch {
+      // Completion delivery must never hold the execution queue indefinitely.
+    }
+  }
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        const timer = setTimeout(resolve, timeoutMs);
+        timeout = timer as unknown as NodeJS.Timeout;
+        timeout.unref();
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

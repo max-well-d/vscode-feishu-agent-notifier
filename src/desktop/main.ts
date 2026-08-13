@@ -21,6 +21,7 @@ import { LocalHookServer } from "../server";
 import { HookEventNormalizer } from "../hookEventNormalizer";
 import { deployHookRuntime, deployLegacyWindowMonitor, HookRuntimeInstallation } from "../hookRuntime";
 import { CodexTranscriptWatcher } from "../codexTranscriptWatcher";
+import { migrateLegacySharedCodexServer } from "../codexSharedServer";
 import { ClaudeTranscriptWatcher } from "../claudeTranscriptWatcher";
 import { eventDeduplicationKey, isCrossOriginDuplicate } from "../event";
 import { DesktopConfigStore } from "./configStore";
@@ -112,6 +113,7 @@ async function boot(): Promise<void> {
     () => log("info", "Session Broker 已连接"),
     (error) => log("warn", `Session Broker 暂不可用：${error instanceof Error ? error.message : String(error)}`)
   );
+  void migrateLegacyCodexWhenIdle();
   startApprovalMonitor();
   app.on("activate", showWindow);
   app.on("before-quit", () => {
@@ -125,6 +127,30 @@ async function boot(): Promise<void> {
     void removeDesktopDescriptor();
     broker.dispose();
   });
+}
+
+async function migrateLegacyCodexWhenIdle(): Promise<void> {
+  const executable = await findAgentExecutable("codex");
+  if (!executable) return;
+  try {
+    const migrated = await migrateLegacySharedCodexServer({
+      dataDirectory,
+      executable,
+      appServerArgs: ["-c", "features.code_mode_host=true", "app-server"],
+      log: {
+        debug: (message) => log("debug", message),
+        info: (message) => log("info", message),
+        warn: (message) => log("warn", message)
+      }
+    });
+    if (!migrated) return;
+    await broker.reconnectCodex();
+    await broker.refresh();
+    log("info", "Codex App Server 已迁移到无窗口宿主；Session ID 与历史保持不变。 ");
+    pushSnapshot();
+  } catch (error) {
+    log("warn", `Codex 无窗口迁移未完成：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function loadExternalChannels(): Promise<void> {

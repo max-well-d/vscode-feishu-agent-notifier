@@ -2,7 +2,7 @@ import { AgentSession, InputOrigin } from "./types";
 import { AgentEvent } from "./types";
 import { HandoffState } from "./handoff";
 
-export const BROKER_PROTOCOL_VERSION = 2 as const;
+export const BROKER_PROTOCOL_VERSION = 3 as const;
 
 export interface BrokerDescriptor {
   protocolVersion: typeof BROKER_PROTOCOL_VERSION;
@@ -17,6 +17,8 @@ export interface BrokerSnapshot {
   version: string;
   capabilities: {
     sameServerThreadAttach: true;
+    exactTurnRecovery: true;
+    ownedTurnCancellation: true;
   };
   state: "starting" | "ready" | "failed";
   codexState: "stopped" | "starting" | "ready" | "failed";

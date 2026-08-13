@@ -65,6 +65,7 @@ export class CodexAppServerClient {
   private readonly turnWaiters = new Map<string, TurnWaiter>();
   private readonly turnMessages = new Map<string, string>();
   private readonly activeTurns = new Map<string, string>();
+  private readonly ownedTurns = new Map<string, string>();
   private readonly loadedThreads = new Set<string>();
   private readonly metadataCache = new Map<string, { value: CodexThreadMetadata; cachedAt: number }>();
   private disposed = false;
@@ -83,6 +84,15 @@ export class CodexAppServerClient {
 
   public get activeCount(): number {
     return this.activeTurns.size;
+  }
+
+  public ensureReady(): Promise<void> {
+    return this.ensureStarted();
+  }
+
+  public async threadStatus(threadId: string): Promise<string> {
+    await this.ensureStarted();
+    return this.readThreadStatus(threadId);
   }
 
   public async startThread(
@@ -244,7 +254,7 @@ export class CodexAppServerClient {
     const startedAt = Date.now();
     await this.ensureThread(session, policy);
     const status = await this.readThreadStatus(session.sessionId);
-    if (status === "active" || this.activeTurns.has(session.sessionId)) {
+    if (status === "active") {
       throw new Error("托管 Codex 会话仍在运行；请等待完成，或使用 /steer 追加指令");
     }
     if (signal.aborted) {
@@ -265,14 +275,17 @@ export class CodexAppServerClient {
       throw new Error("Codex App Server 未返回 turn.id");
     }
     this.activeTurns.set(session.sessionId, turnId);
+    this.ownedTurns.set(session.sessionId, turnId);
 
     let timeout: NodeJS.Timeout | undefined;
+    const polling = new AbortController();
     const onAbort = (): void => {
       void this.interrupt(session.sessionId, turnId);
     };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
       const completion = this.waitForTurn(turnId);
+      const recoveredCompletion = this.pollTurnUntilTerminal(session.sessionId, turnId, polling.signal);
       const timed = new Promise<JsonObject>((_resolve, reject) => {
         timeout = setTimeout(() => {
           void this.interrupt(session.sessionId, turnId);
@@ -280,7 +293,7 @@ export class CodexAppServerClient {
         }, timeoutMs);
         timeout.unref();
       });
-      const finished = await Promise.race([completion, timed]);
+      const finished = await Promise.race([completion, recoveredCompletion, timed]);
       const statusValue = stringValue(finished.status);
       if (signal.aborted || statusValue === "interrupted") {
         throw new Error("远程 Agent 回复已取消");
@@ -301,8 +314,14 @@ export class CodexAppServerClient {
       if (timeout) {
         clearTimeout(timeout);
       }
+      polling.abort();
       signal.removeEventListener("abort", onAbort);
-      this.activeTurns.delete(session.sessionId);
+      if (this.activeTurns.get(session.sessionId) === turnId) {
+        this.activeTurns.delete(session.sessionId);
+      }
+      if (this.ownedTurns.get(session.sessionId) === turnId) {
+        this.ownedTurns.delete(session.sessionId);
+      }
       this.turnWaiters.delete(turnId);
       this.completedTurns.delete(turnId);
       this.turnMessages.delete(turnId);
@@ -311,7 +330,7 @@ export class CodexAppServerClient {
 
   public async steer(session: AgentSession, prompt: string): Promise<string> {
     await this.ensureStarted();
-    const turnId = this.activeTurns.get(session.sessionId);
+    const turnId = this.ownedTurns.get(session.sessionId);
     if (!turnId) {
       throw new Error("该托管 Codex 会话当前没有运行中的 turn");
     }
@@ -324,7 +343,7 @@ export class CodexAppServerClient {
   }
 
   public async interruptSession(sessionId: string): Promise<boolean> {
-    const turnId = this.activeTurns.get(sessionId);
+    const turnId = this.ownedTurns.get(sessionId);
     if (!turnId) {
       return false;
     }
@@ -342,6 +361,8 @@ export class CodexAppServerClient {
     this.socket = undefined;
     this.rejectAll(new Error("Codex App Server 已停止"));
     this.loadedThreads.clear();
+    this.activeTurns.clear();
+    this.ownedTurns.clear();
     this.metadataCache.clear();
     this.setState("stopped");
   }
@@ -393,6 +414,37 @@ export class CodexAppServerClient {
     const thread = objectValue(result.thread);
     const status = objectValue(thread?.status);
     return stringValue(status?.type) || "unknown";
+  }
+
+  private async pollTurnUntilTerminal(
+    threadId: string,
+    turnId: string,
+    signal: AbortSignal
+  ): Promise<JsonObject> {
+    while (!signal.aborted) {
+      await delay(750, signal);
+      if (signal.aborted) {
+        break;
+      }
+      const result = await this.request("thread/read", { threadId, includeTurns: true });
+      const thread = objectValue(result.thread);
+      const turns = arrayValue(thread?.turns);
+      const turn = turns.map(objectValue).find((candidate) => stringValue(candidate?.id) === turnId);
+      if (!turn) {
+        continue;
+      }
+      const status = stringValue(turn.status);
+      if (status === "inProgress" || status === "pending" || status === "running") {
+        continue;
+      }
+      const message = lastAgentMessage(turn);
+      if (message) {
+        this.turnMessages.set(turnId, message);
+      }
+      this.options.log?.warn(`Recovered terminal Codex turn ${turnId} from thread/read after a missed notification.`);
+      return turn;
+    }
+    return new Promise<JsonObject>(() => undefined);
   }
 
   private async interrupt(threadId: string, turnId: string): Promise<void> {
@@ -652,7 +704,7 @@ export class CodexAppServerClient {
       const turn = objectValue(params.turn) ?? {};
       const turnId = stringValue(turn.id);
       const threadId = stringValue(params.threadId);
-      if (threadId) {
+      if (threadId && this.activeTurns.get(threadId) === turnId) {
         this.activeTurns.delete(threadId);
       }
       if (!turnId) {
@@ -676,6 +728,7 @@ export class CodexAppServerClient {
       this.reader = undefined;
       this.loadedThreads.clear();
       this.activeTurns.clear();
+      this.ownedTurns.clear();
       this.rejectAll(error);
     }
     if (!this.disposed) {
@@ -723,10 +776,40 @@ function objectValue(value: unknown): JsonObject | undefined {
     : undefined;
 }
 
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function lastAgentMessage(turn: JsonObject): string {
+  const items = arrayValue(turn.items).map(objectValue).filter((item): item is JsonObject => Boolean(item));
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index].type === "agentMessage") {
+      return stringValue(items[index].text);
+    }
+  }
+  return "";
+}
+
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    timer.unref();
+    signal.addEventListener("abort", done, { once: true });
+    function done(): void {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+  });
 }

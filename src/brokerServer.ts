@@ -113,6 +113,11 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       sendJson(response, 200, snapshot());
       return;
     }
+    if (request.method === "POST" && url.pathname === "/codex/reconnect") {
+      await codex.ensureReady();
+      sendJson(response, 200, { ready: true });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/threads/start") {
       const body = await readJson(request);
       const session = await codex.startThread(
@@ -166,13 +171,15 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
         return;
       }
       let state = handoffs.get(session.sessionId) ?? initialHandoffState(session.sessionId);
+      state = await reconcileHandoffState(session.sessionId, state, codex);
+      handoffs.set(session.sessionId, state);
       if (body.origin !== "local") {
         const decision = requestRemoteTurn(state, new Date(), body.origin);
         state = decision.state;
         handoffs.set(session.sessionId, state);
         await persistHandoffs(statePath, handoffs);
         if (decision.action === "queue") {
-          state = await waitForRemoteAuthority(session.sessionId, handoffs, statePath, request);
+          state = await waitForRemoteAuthority(session.sessionId, handoffs, statePath, request, codex);
         }
       } else if (state.authority === "remote" && state.turnState === "running") {
         sendJson(response, 409, { code: "REMOTE_ACTIVE", error: "远程 turn 正在运行，本地输入已暂停" });
@@ -432,7 +439,11 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
     return {
       protocolVersion: BROKER_PROTOCOL_VERSION,
       version: options.version,
-      capabilities: { sameServerThreadAttach: true },
+      capabilities: {
+        sameServerThreadAttach: true,
+        exactTurnRecovery: true,
+        ownedTurnCancellation: true
+      },
       state: codexState === "failed" ? "failed" : "ready",
       codexState,
       codexError,
@@ -534,10 +545,12 @@ async function waitForRemoteAuthority(
   sessionId: string,
   handoffs: Map<string, HandoffState>,
   statePath: string,
-  request: IncomingMessage
+  request: IncomingMessage,
+  codex: CodexAppServerClient
 ): Promise<HandoffState> {
   while (!request.destroyed) {
-    const current = handoffs.get(sessionId) ?? initialHandoffState(sessionId);
+    const persisted = handoffs.get(sessionId) ?? initialHandoffState(sessionId);
+    const current = await reconcileHandoffState(sessionId, persisted, codex);
     const decision = requestRemoteTurn({ ...current, queuedRemoteCount: Math.max(0, current.queuedRemoteCount - 1) });
     if (decision.action === "start") {
       handoffs.set(sessionId, decision.state);
@@ -547,6 +560,18 @@ async function waitForRemoteAuthority(
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("远程请求连接已关闭");
+}
+
+async function reconcileHandoffState(
+  sessionId: string,
+  state: HandoffState,
+  codex: CodexAppServerClient
+): Promise<HandoffState> {
+  if (state.turnState !== "running" && state.turnState !== "unknown") {
+    return state;
+  }
+  const status = await codex.threadStatus(sessionId).catch(() => "unknown");
+  return status === "idle" || status === "notLoaded" ? completeTurn(state) : state;
 }
 
 async function loadHandoffs(filePath: string): Promise<Map<string, HandoffState>> {

@@ -25,6 +25,11 @@ export interface SharedCodexServerOptions {
   };
 }
 
+export interface LegacySharedCodexMigrationOptions extends SharedCodexServerOptions {
+  idlePollMs?: number;
+  migrationTimeoutMs?: number;
+}
+
 const DESCRIPTOR_NAME = "codex-shared.json";
 const LOCK_NAME = "codex-shared.lock";
 
@@ -95,6 +100,47 @@ export async function ensureSharedCodexServer(
   }
 }
 
+/**
+ * Replaces a pre-host shared server only after every loaded thread is idle.
+ * The replacement keeps persisted thread ids while moving all future command
+ * descendants into the native hidden-console job.
+ */
+export async function migrateLegacySharedCodexServer(
+  options: LegacySharedCodexMigrationOptions
+): Promise<boolean> {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  const descriptor = await readHealthyDescriptor(options.dataDirectory);
+  if (!descriptor || descriptor.windowsConsoleHost) {
+    return false;
+  }
+  const host = await resolveWindowsConsoleHost(options.dataDirectory);
+  if (!host) {
+    return false;
+  }
+  const deadline = Date.now() + (options.migrationTimeoutMs ?? 60 * 60_000);
+  const pollMs = Math.max(500, options.idlePollMs ?? 2_000);
+  let idleSamples = 0;
+  while (Date.now() < deadline && processIsAlive(descriptor.pid)) {
+    const idle = await allLoadedThreadsIdle(descriptor.endpoint).catch(() => false);
+    idleSamples = idle ? idleSamples + 1 : 0;
+    if (idleSamples >= 2) {
+      options.log?.info(`Migrating legacy Codex App Server ${descriptor.pid} to the hidden console host.`);
+      await terminateProcessTree(host, descriptor.pid);
+      await fs.rm(path.join(options.dataDirectory, DESCRIPTOR_NAME), { force: true });
+      await fs.rm(path.join(options.dataDirectory, LOCK_NAME), { force: true });
+      const replacement = await ensureSharedCodexServer(options);
+      if (!replacement.windowsConsoleHost) {
+        throw new Error("Codex App Server migration did not activate the hidden console host");
+      }
+      return true;
+    }
+    await delay(pollMs);
+  }
+  return false;
+}
+
 async function startLegacyWindowMonitor(
   dataDirectory: string,
   descriptor: SharedCodexDescriptor
@@ -131,6 +177,112 @@ async function resolveWindowsConsoleHost(dataDirectory: string): Promise<string 
   } catch {
     return undefined;
   }
+}
+
+async function terminateProcessTree(host: string, pid: number): Promise<void> {
+  const child = spawn(host, ["--terminate-tree", String(pid)], {
+    windowsHide: true,
+    stdio: "ignore"
+  });
+  const code = await new Promise<number>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (value) => resolve(value ?? -1));
+  });
+  if (code !== 0 || processIsAlive(pid)) {
+    throw new Error(`Unable to terminate legacy Codex App Server process tree ${pid}`);
+  }
+}
+
+async function allLoadedThreadsIdle(endpoint: string): Promise<boolean> {
+  const socket = new WebSocket(endpoint);
+  const pending = new Map<number, {
+    resolve(value: Record<string, unknown>): void;
+    reject(error: Error): void;
+    timer: NodeJS.Timeout;
+  }>();
+  let nextId = 1;
+  const request = (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`Codex migration probe timed out: ${method}`));
+      }, 5_000);
+      timer.unref();
+      pending.set(id, { resolve, reject, timer });
+      socket.send(JSON.stringify({ id, method, params }));
+    });
+  };
+  socket.addEventListener("message", (event) => {
+    void messageText(event.data).then((text) => {
+      const value = JSON.parse(text) as Record<string, unknown>;
+      const id = typeof value.id === "number" ? value.id : undefined;
+      if (id === undefined) return;
+      const item = pending.get(id);
+      if (!item) return;
+      pending.delete(id);
+      clearTimeout(item.timer);
+      const error = recordValue(value.error);
+      error
+        ? item.reject(new Error(stringValue(error.message) || "Codex migration probe failed"))
+        : item.resolve(recordValue(value.result) ?? {});
+    }).catch(() => undefined);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Codex migration probe connection timed out")), 5_000);
+      timer.unref();
+      socket.addEventListener("open", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      socket.addEventListener("error", () => {
+        clearTimeout(timer);
+        reject(new Error("Codex migration probe connection failed"));
+      }, { once: true });
+    });
+    await request("initialize", {
+      clientInfo: { name: "agent_link_migration", title: "Agent Link Migration", version: "1" },
+      capabilities: { experimentalApi: true }
+    });
+    socket.send(JSON.stringify({ method: "initialized", params: {} }));
+    const loaded = await request("thread/loaded/list", {});
+    const ids = Array.isArray(loaded.data)
+      ? loaded.data.filter((value): value is string => typeof value === "string")
+      : [];
+    for (const threadId of ids) {
+      const result = await request("thread/read", { threadId, includeTurns: false });
+      const thread = recordValue(result.thread);
+      const status = recordValue(thread?.status);
+      if (stringValue(status?.type) === "active") {
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    socket.close();
+    for (const item of pending.values()) {
+      clearTimeout(item.timer);
+      item.reject(new Error("Codex migration probe closed"));
+    }
+    pending.clear();
+  }
+}
+
+async function messageText(value: string | ArrayBuffer | Blob): Promise<string> {
+  if (typeof value === "string") return value;
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf8");
+  return value.text();
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 export async function inspectSharedCodexServer(
