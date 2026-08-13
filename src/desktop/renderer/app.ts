@@ -7,6 +7,14 @@ let snapshot: DesktopSnapshot;
 let currentView: View = "overview";
 let editingChannel: string | undefined;
 let editableChannel: EditableChannel | undefined;
+let pendingSnapshotRender = false;
+
+interface FormDraftField {
+  value: string;
+  checked?: boolean;
+}
+
+const formDrafts = new Map<string, Record<string, FormDraftField>>();
 
 const root = document.querySelector<HTMLElement>("#app")!;
 
@@ -16,6 +24,10 @@ void window.agentLink.snapshot().then((value) => {
 });
 window.agentLink.onSnapshot((value) => {
   snapshot = value;
+  if (formHasFocus()) {
+    pendingSnapshotRender = true;
+    return;
+  }
   render();
 });
 
@@ -36,6 +48,7 @@ function render(): void {
     </main>`;
   bindCommon();
   bindView();
+  restoreFormDraft();
 }
 
 function navButton(view: View, label: string, icon: string): string {
@@ -110,7 +123,7 @@ function renderChannelEditor(channel: DesktopSnapshot["channels"][number]): stri
   const configuration = editableChannel!.configuration;
   return `
     ${pageHeader(`${channel.manifest.name} 配置`, "配置由 Channel 自己声明；密钥使用操作系统安全存储加密。", `<button class="button secondary" id="channel-back">返回</button>`)}
-    <form class="panel form" id="channel-form">
+    <form class="panel form" id="channel-form" data-draft-key="channel:${escapeHtml(channel.manifest.id)}">
       <label class="toggle-line"><div><strong>启用 Channel</strong><small>关闭后不会建立连接或投递消息</small></div><input type="checkbox" name="enabled" ${configuration.enabled ? "checked" : ""}><span class="toggle"></span></label>
       <div class="form-grid">${Object.entries(schema).map(([key, property]) => field(key, property, configuration.config[key], editableChannel!.secretConfigured.includes(key))).join("")}</div>
       <div class="form-actions"><button type="button" class="button secondary" id="channel-test" ${configuration.enabled ? "" : "disabled"}>发送测试</button><button type="submit" class="button primary">保存并应用</button></div>
@@ -125,7 +138,7 @@ function renderSystem(): string {
       <article class="panel setting"><div><h3>数据目录</h3><p>普通配置、会话索引和日志保存在这里；系统目录只保存这一位置指针。</p><code>${escapeHtml(snapshot.dataDirectory)}</code></div><div class="button-row"><button class="button secondary" id="open-data">打开</button><button class="button primary" id="choose-data">更改</button></div></article>
       <article class="panel setting"><div><h3>Session Broker</h3><p>状态：${escapeHtml(snapshot.broker.state)} · Codex App Server：${escapeHtml(snapshot.broker.codexState)}</p><code>${snapshot.broker.activeTurns} active turns</code></div><button class="button secondary" id="refresh-broker">重新检查</button></article>
     </section>
-    <form class="panel form system-form" id="system-form">
+    <form class="panel form system-form" id="system-form" data-draft-key="system">
       <div class="panel-title"><h3>远程执行</h3><span>Core policy</span></div>
       <div class="form-grid">
         <label class="field"><span>执行策略</span><select name="remoteExecutionPolicy">
@@ -186,6 +199,7 @@ function bindView(): void {
     });
   }));
   document.querySelector("#channel-back")?.addEventListener("click", () => {
+    if (editingChannel) formDrafts.delete(`channel:${editingChannel}`);
     editingChannel = undefined;
     editableChannel = undefined;
     render();
@@ -193,7 +207,16 @@ function bindView(): void {
   document.querySelector("#channel-test")?.addEventListener("click", () => {
     if (editingChannel) run(window.agentLink.testChannel(editingChannel), "测试消息已发送");
   });
-  document.querySelector<HTMLFormElement>("#channel-form")?.addEventListener("submit", (event) => {
+  const channelForm = document.querySelector<HTMLFormElement>("#channel-form");
+  bindFormDraft(channelForm);
+  channelForm?.addEventListener("change", (event) => {
+    const input = event.target as HTMLInputElement | null;
+    if (input?.name === "enabled") {
+      const testButton = document.querySelector<HTMLButtonElement>("#channel-test");
+      if (testButton) testButton.disabled = !input.checked;
+    }
+  });
+  channelForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!editingChannel || !editableChannel) return;
     const form = event.currentTarget as HTMLFormElement;
@@ -204,21 +227,29 @@ function bindView(): void {
       else if (input.dataset.type === "number") next.config[input.name] = Number(input.value);
       else next.config[input.name] = input.value;
     });
-    run(window.agentLink.saveChannel(editingChannel, next), "配置已应用").then(() => {
+    const channelId = editingChannel;
+    void run(window.agentLink.saveChannel(channelId, next), "配置已应用").then((saved) => {
+      if (!saved) return;
+      formDrafts.delete(`channel:${channelId}`);
       editableChannel = undefined;
       editingChannel = undefined;
       currentView = "channels";
+      render();
     });
   });
-  document.querySelector<HTMLFormElement>("#system-form")?.addEventListener("submit", (event) => {
+  const systemForm = document.querySelector<HTMLFormElement>("#system-form");
+  bindFormDraft(systemForm);
+  systemForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
     const data = new FormData(form);
-    run(window.agentLink.saveSettings({
+    void run(window.agentLink.saveSettings({
       remoteExecutionPolicy: data.get("remoteExecutionPolicy") as DesktopSnapshot["settings"]["remoteExecutionPolicy"],
       defaultWorkspace: String(data.get("defaultWorkspace") ?? ""),
       receiverPort: Number(data.get("receiverPort"))
-    }), "系统策略已保存");
+    }), "系统策略已保存").then((saved) => {
+      if (saved) formDrafts.delete("system");
+    });
   });
   document.querySelector("#install-hooks")?.addEventListener("click", () => {
     const status = document.querySelector<HTMLElement>("#form-status");
@@ -232,17 +263,66 @@ function bindView(): void {
   });
 }
 
-async function run(action: Promise<DesktopSnapshot>, success?: string): Promise<void> {
+async function run(action: Promise<DesktopSnapshot>, success?: string): Promise<boolean> {
   const status = document.querySelector<HTMLElement>("#form-status");
   try {
     snapshot = await action;
     if (status && success) status.textContent = success;
     else render();
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (status) { status.textContent = message; status.classList.add("error-text"); }
     else alert(message);
+    return false;
   }
+}
+
+function bindFormDraft(form: HTMLFormElement | null): void {
+  if (!form) return;
+  const capture = () => captureFormDraft(form);
+  form.addEventListener("input", capture);
+  form.addEventListener("change", capture);
+  form.addEventListener("focusout", () => queueMicrotask(() => {
+    if (!pendingSnapshotRender || formHasFocus()) return;
+    pendingSnapshotRender = false;
+    render();
+  }));
+}
+
+function captureFormDraft(form: HTMLFormElement): void {
+  const key = form.dataset.draftKey;
+  if (!key) return;
+  const fields: Record<string, FormDraftField> = {};
+  form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[name]").forEach((input) => {
+    fields[input.name] = {
+      value: input.value,
+      ...("checked" in input ? { checked: input.checked } : {})
+    };
+  });
+  formDrafts.set(key, fields);
+}
+
+function restoreFormDraft(): void {
+  const form = document.querySelector<HTMLFormElement>("form[data-draft-key]");
+  const key = form?.dataset.draftKey;
+  if (!form || !key) return;
+  const fields = formDrafts.get(key);
+  if (!fields) return;
+  form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[name]").forEach((input) => {
+    const field = fields[input.name];
+    if (!field) return;
+    input.value = field.value;
+    if ("checked" in input && field.checked !== undefined) input.checked = field.checked;
+  });
+  const enabled = form.elements.namedItem("enabled");
+  const testButton = document.querySelector<HTMLButtonElement>("#channel-test");
+  if (enabled instanceof HTMLInputElement && testButton) testButton.disabled = !enabled.checked;
+}
+
+function formHasFocus(): boolean {
+  return document.activeElement instanceof HTMLElement
+    && Boolean(document.activeElement.closest("form[data-draft-key]"));
 }
 
 function pageHeader(title: string, subtitle: string, action = ""): string {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.18.1
+
+- 修复 Broker 状态更新导致 Channel 与系统设置表单被反复重置的问题；控件聚焦期间不再重建页面，未保存草稿会跨状态刷新保留。
+- 修复 Agent Link 托盘图标为空的问题；窗口和托盘统一加载打包内的 PNG 资源，并保留内嵌图标作为降级路径。
+
 ## 0.18.0
 
 - Add Agent Link as an independent Electron desktop middleware with a tray, sandboxed control plane, session overview, Agent discovery, system policy settings, Hook Receiver, and Windows installer/portable targets.

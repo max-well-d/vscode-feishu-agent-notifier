@@ -351,6 +351,7 @@ async function loadChannels(): Promise<void> {
 }
 
 function createWindow(): void {
+  const icon = loadApplicationIcon();
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
@@ -359,6 +360,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: "#0d1117",
     title: PRODUCT_NAME,
+    icon: icon.isEmpty() ? undefined : icon,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -385,8 +387,12 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  const icon = nativeImage.createFromDataURL(TRAY_ICON);
-  tray = new Tray(icon.resize({ width: 20, height: 20 }));
+  const icon = loadApplicationIcon();
+  if (icon.isEmpty()) {
+    log("error", "托盘图标加载失败");
+    return;
+  }
+  tray = new Tray(icon.resize({ width: 20, height: 20, quality: "best" }));
   tray.setToolTip(PRODUCT_NAME);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "打开 Agent Link", click: showWindow },
@@ -395,6 +401,12 @@ function createTray(): void {
     { label: "退出", click: () => { quitting = true; app.quit(); } }
   ]));
   tray.on("double-click", showWindow);
+}
+
+function loadApplicationIcon(): Electron.NativeImage {
+  const packagedIcon = nativeImage.createFromPath(path.join(__dirname, "assets", "icon.png"));
+  if (!packagedIcon.isEmpty()) return packagedIcon;
+  return nativeImage.createFromDataURL(TRAY_ICON);
 }
 
 function registerIpc(): void {
