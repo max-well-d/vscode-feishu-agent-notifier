@@ -279,7 +279,7 @@ export class ReplyRouter {
     const replyId = await this.options.reply(message,
       `${waiting ? "已排队" : "已接收"}：${formatSession(session)}\n`
       + `策略：${policy === "planOnly" ? "只读规划" : "继承本机权限"}`
-      + `\n会话：${ownership === "managed" ? "飞书托管" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : branchingCodex ? "从外部 Codex 会话创建安全分支（原会话不被占用）" : "外部完成后续写"}`
+      + `\n会话：${ownership === "managed" ? "本机/飞书共享" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : branchingCodex ? "优先保持原 Codex Session ID；writer 冲突时创建安全分支" : "外部完成后续写"}`
       + `${handoff ? `\n交接：${handoff}${handoff === "本地优先" ? "（等待本地输入或 turn 结束）" : ""}` : ""}`
       + `${waiting ? `\n队列位置：${result.position}` : ""}`
     );

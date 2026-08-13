@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.0
+
+- Add an opt-in process bridge that works with the official VS Code extensions and standalone Codex/Claude Code CLIs; VS Code is now one client rather than the required session owner.
+- Run one persistent official Codex App Server on a random loopback WebSocket endpoint and proxy the official VS Code stdio protocol to it; standalone Codex TUI sessions use the public `--remote` transport.
+- Prefer adopting an authoritative external Codex thread with the original Session ID, and retain exact-turn persistent forking only as the active-writer compatibility fallback.
+- Wrap the original Claude Code executable without patching it, inject an isolated official Channel per process, and migrate the Channel route to the real Claude Session ID through Hook metadata.
+- Add native Windows launchers that preserve interactive terminals and relay redirected stdio for VS Code clients; add standalone launcher paths for use outside VS Code.
+- Back up and restore `chatgpt.cliExecutable` and `claudeCode.claudeProcessWrapper` in the configurable local data directory. Installation is explicit and upgrades never enable the bridge automatically.
+- Add bridge and shared-server diagnostics, argument transformation tests, same-ID adoption tests, and real Windows launcher/App Server multi-client smoke coverage.
+
 ## 0.15.0
 
 - Fix a critical single-writer regression: quoted replies to externally owned Codex sessions now always create a persistent fork at the exact completed turn and never resume or retain the original thread in the notifier App Server.

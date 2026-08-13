@@ -34,6 +34,7 @@ export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
     status: failed ? "failed" : "completed",
     origin: codexNotify ? "notify" : "hook",
     channelId: stringValue(input.__notifier_channel_id) || undefined,
+    managedBackend: managedBackend(input.__notifier_bridge_backend),
     sessionId: stringValue(input["thread-id"]) || stringValue(input.session_id),
     turnId: stringValue(input["turn-id"]) || stringValue(input.turn_id) || stringValue(input.prompt_id),
     cwd,
@@ -41,6 +42,10 @@ export function normalizeAgentEvent(input: UnknownRecord): AgentEvent {
     message,
     occurredAt: new Date().toISOString()
   };
+}
+
+function managedBackend(value: unknown): AgentEvent["managedBackend"] {
+  return value === "codex-app-server" || value === "claude-channel" ? value : undefined;
 }
 
 export function projectNameFromCwd(cwd: string): string {
@@ -94,7 +99,7 @@ export function formatEventMessage(event: AgentEvent, includeMetadata: boolean):
     `Session ID：${event.sessionId || "未知"}`,
     `项目：${event.project}`,
     `状态：${status}`,
-    `输入来源：${event.inputOrigin === "feishu" ? "飞书远程" : event.inputOrigin === "local" ? "VS Code 本地" : "未标记"}`,
+    `输入来源：${event.inputOrigin === "feishu" ? "飞书远程" : event.inputOrigin === "local" ? "本机客户端" : "未标记"}`,
     `时间：${new Date(event.occurredAt).toLocaleString("zh-CN", { hour12: false })}`
   ];
 

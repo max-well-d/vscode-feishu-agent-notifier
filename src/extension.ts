@@ -44,6 +44,12 @@ import {
 import { parseIdList, validateIdListInput, validateReceiveIdInput } from "./remoteConfiguration";
 import { prepareDataDirectory, resolveDataDirectory } from "./dataDirectory";
 import { ManagedSessionPanel } from "./managedSessionPanel";
+import {
+  deployProcessBridge,
+  inspectProcessBridge,
+  readProcessBridgeBackup,
+  writeProcessBridgeBackup
+} from "./processBridge";
 
 const SECRET_WEBHOOK_URL = "feishuAgentNotifier.webhookUrl";
 const SECRET_WEBHOOK_SECRET = "feishuAgentNotifier.webhookSecret";
@@ -112,6 +118,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await migrateLegacySecrets(context);
   await migrateWorkspacePause(context);
   await refreshAgentExecutables();
+  await repairRelocatedProcessBridge(context);
   agentCapabilities = await detectAgentCapabilities(undefined, {
     codex: agentExecutablePaths.codex,
     claude: agentExecutablePaths["claude-code"]
@@ -140,6 +147,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("feishuAgentNotifier.cancelRemoteReplies", () => cancelRemoteReplies()),
     vscode.commands.registerCommand("feishuAgentNotifier.openManagedCodexSession", () => openManagedCodexSession(context)),
     vscode.commands.registerCommand("feishuAgentNotifier.startManagedClaudeSession", () => startManagedClaudeSession(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.installProcessBridge", () => installAgentProcessBridge(context)),
+    vscode.commands.registerCommand("feishuAgentNotifier.uninstallProcessBridge", () => uninstallAgentProcessBridge()),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (configurationWizardSaving || !event.affectsConfiguration("feishuAgentNotifier")) {
         return;
@@ -401,6 +410,22 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
         );
         if (replyId) {
           await sessionRegistry.recordMessageRoute(replyId, forked);
+        }
+      },
+      async (job, adopted) => {
+        if (!sessionRegistry) {
+          throw new Error("会话注册表不可用");
+        }
+        const persisted = await sessionRegistry.recordManagedSession(adopted);
+        await sessionRegistry.selectForChat(job.chatId, persisted);
+        Object.assign(adopted, persisted);
+        const replyId = await replyToInbound(
+          job.inboundMessageId,
+          job.chatId,
+          `已将原 Codex Session 无损接入共享 App Server：${formatAgentSession(persisted)}\nSession ID 保持不变；后续本地与飞书回复进入同一会话。`
+        );
+        if (replyId) {
+          await sessionRegistry.recordMessageRoute(replyId, persisted, job.anchorTurnId);
         }
       }
     ),
@@ -1127,6 +1152,118 @@ async function removeHookFiles(context: vscode.ExtensionContext): Promise<void> 
   }
 }
 
+async function installAgentProcessBridge(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    await refreshAgentExecutables();
+    const codexExecutable = agentExecutablePaths.codex;
+    const claudeExecutable = agentExecutablePaths["claude-code"];
+    if (!codexExecutable || !claudeExecutable) {
+      throw new Error(`无法安装进程桥接：Codex ${codexExecutable ? "已找到" : "未找到"}，Claude Code ${claudeExecutable ? "已找到" : "未找到"}`);
+    }
+    const installation = await deployProcessBridge({
+      dataDirectory: extensionStoragePath,
+      extensionPath: context.extensionPath,
+      runtimePath: process.execPath,
+      codexExecutable,
+      claudeExecutable
+    });
+    const codexConfiguration = vscode.workspace.getConfiguration("chatgpt");
+    const claudeConfiguration = vscode.workspace.getConfiguration("claudeCode");
+    const previousBackup = await readProcessBridgeBackup(extensionStoragePath);
+    const codexCurrent = codexConfiguration.inspect<string>("cliExecutable")?.globalValue;
+    const claudeCurrent = claudeConfiguration.inspect<string>("claudeProcessWrapper")?.globalValue;
+    await writeProcessBridgeBackup(extensionStoragePath, {
+      protocolVersion: 1,
+      installedAt: new Date().toISOString(),
+      codexPrevious: previousBackup?.codexPrevious ?? (codexCurrent === installation.codexLauncher ? undefined : codexCurrent),
+      claudePrevious: previousBackup?.claudePrevious ?? (claudeCurrent === installation.claudeLauncher ? undefined : claudeCurrent),
+      codexLauncher: installation.codexLauncher,
+      claudeLauncher: installation.claudeLauncher
+    });
+    await codexConfiguration.update("cliExecutable", installation.codexLauncher, vscode.ConfigurationTarget.Global);
+    await claudeConfiguration.update("claudeProcessWrapper", installation.claudeLauncher, vscode.ConfigurationTarget.Global);
+    output?.info(`Codex/Claude Code 进程桥接已部署：${installation.root}`);
+    output?.info(`独立 CLI：${installation.codexCliCommand}；${installation.claudeCliCommand}`);
+    const selection = await vscode.window.showInformationMessage(
+      "进程桥接已安装。官方 VS Code 插件和独立 CLI 可共享飞书会话；设置已备份到自定义数据目录。需要重载窗口后生效。",
+      "立即重载"
+    );
+    if (selection === "立即重载") {
+      await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    }
+  } catch (error) {
+    await showOperationError("安装进程桥接失败", error);
+  }
+}
+
+async function repairRelocatedProcessBridge(context: vscode.ExtensionContext): Promise<void> {
+  const backup = await readProcessBridgeBackup(extensionStoragePath);
+  if (!backup) {
+    return;
+  }
+  const codexConfiguration = vscode.workspace.getConfiguration("chatgpt");
+  const claudeConfiguration = vscode.workspace.getConfiguration("claudeCode");
+  const codexCurrent = codexConfiguration.inspect<string>("cliExecutable")?.globalValue;
+  const claudeCurrent = claudeConfiguration.inspect<string>("claudeProcessWrapper")?.globalValue;
+  const needsCodexRelink = codexCurrent === backup.codexLauncher && !backup.codexLauncher.startsWith(path.join(extensionStoragePath, "process-bridge"));
+  const needsClaudeRelink = claudeCurrent === backup.claudeLauncher && !backup.claudeLauncher.startsWith(path.join(extensionStoragePath, "process-bridge"));
+  if (!needsCodexRelink && !needsClaudeRelink) {
+    return;
+  }
+  const codexExecutable = agentExecutablePaths.codex;
+  const claudeExecutable = agentExecutablePaths["claude-code"];
+  if (!codexExecutable || !claudeExecutable) {
+    output?.warn("数据目录已迁移，但缺少 Agent CLI，无法重建进程桥接；请运行安装进程桥接命令。 ");
+    return;
+  }
+  const installation = await deployProcessBridge({
+    dataDirectory: extensionStoragePath,
+    extensionPath: context.extensionPath,
+    runtimePath: process.execPath,
+    codexExecutable,
+    claudeExecutable
+  });
+  if (needsCodexRelink) {
+    await codexConfiguration.update("cliExecutable", installation.codexLauncher, vscode.ConfigurationTarget.Global);
+  }
+  if (needsClaudeRelink) {
+    await claudeConfiguration.update("claudeProcessWrapper", installation.claudeLauncher, vscode.ConfigurationTarget.Global);
+  }
+  await writeProcessBridgeBackup(extensionStoragePath, {
+    ...backup,
+    codexLauncher: installation.codexLauncher,
+    claudeLauncher: installation.claudeLauncher
+  });
+  output?.info("已根据新的本地数据目录重建并重新绑定 Agent 进程桥接。 ");
+}
+
+async function uninstallAgentProcessBridge(): Promise<void> {
+  const backup = await readProcessBridgeBackup(extensionStoragePath);
+  if (!backup) {
+    await vscode.window.showInformationMessage("没有找到进程桥接设置备份；未修改 Codex 或 Claude Code 设置。");
+    return;
+  }
+  const answer = await vscode.window.showWarningMessage(
+    "恢复安装进程桥接前的 Codex/Claude Code 设置？正在运行的共享会话不会被强制终止。",
+    { modal: true },
+    "恢复设置"
+  );
+  if (answer !== "恢复设置") {
+    return;
+  }
+  const codexConfiguration = vscode.workspace.getConfiguration("chatgpt");
+  const claudeConfiguration = vscode.workspace.getConfiguration("claudeCode");
+  const codexCurrent = codexConfiguration.inspect<string>("cliExecutable")?.globalValue;
+  const claudeCurrent = claudeConfiguration.inspect<string>("claudeProcessWrapper")?.globalValue;
+  if (codexCurrent === backup.codexLauncher) {
+    await codexConfiguration.update("cliExecutable", backup.codexPrevious, vscode.ConfigurationTarget.Global);
+  }
+  if (claudeCurrent === backup.claudeLauncher) {
+    await claudeConfiguration.update("claudeProcessWrapper", backup.claudePrevious, vscode.ConfigurationTarget.Global);
+  }
+  await vscode.window.showInformationMessage("已恢复原 Codex/Claude Code 设置。桥接文件和持久化会话未删除，可再次安装。重载窗口后生效。");
+}
+
 async function sendTestNotification(context: vscode.ExtensionContext): Promise<void> {
   try {
     const config = await loadNotifierConfig(context);
@@ -1539,7 +1676,7 @@ function renderStatusBar(): void {
 }
 
 interface StatusActionItem extends vscode.QuickPickItem {
-  action: "pause" | "test" | "retry" | "repair" | "diagnostics" | "remoteConfig" | "dataDirectory" | "sessions" | "managedCodex" | "managedClaude" | "cancelRemote" | "settings" | "logs";
+  action: "pause" | "test" | "retry" | "repair" | "bridgeInstall" | "diagnostics" | "remoteConfig" | "dataDirectory" | "sessions" | "managedCodex" | "managedClaude" | "cancelRemote" | "settings" | "logs";
 }
 
 async function showStatus(context: vscode.ExtensionContext): Promise<void> {
@@ -1562,6 +1699,7 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
     { label: "$(folder) 选择本地数据目录", description: extensionStoragePath, action: "dataDirectory" },
     { label: "$(hubot) 打开共享 Codex 会话", description: "本地面板与飞书共用 Session Broker", action: "managedCodex" },
     { label: "$(terminal) 启动共享 Claude Code", description: "原版 CLI + 官方 Channel", action: "managedClaude" },
+    { label: "$(plug) 安装跨客户端进程桥接", description: "官方 VS Code 与独立 CLI 使用同一后端", action: "bridgeInstall" },
     { label: "$(list-tree) 查看本地 Agent 会话", action: "sessions" },
     ...((agentReplyQueue?.activeCount ?? 0) + (agentReplyQueue?.pendingCount ?? 0) > 0
       ? [{ label: "$(stop-circle) 取消远程回复任务", action: "cancelRemote" as const }]
@@ -1592,6 +1730,9 @@ async function showStatus(context: vscode.ExtensionContext): Promise<void> {
       break;
     case "repair":
       await installHookFiles(context);
+      break;
+    case "bridgeInstall":
+      await installAgentProcessBridge(context);
       break;
     case "diagnostics":
       await runDiagnostics(context);
@@ -1766,6 +1907,11 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
       `${codexAppServerClient?.brokerState ?? "stopped"}，PID ${broker?.pid ?? "未启动"}，活动 turn ${broker?.activeTurns ?? 0}，待审批 ${broker?.pendingApprovals.length ?? 0}`));
     checks.push(checkLine("Codex App Server 托管器", codexAppServerClient?.state !== "failed",
       `${codexAppServerClient?.state ?? "stopped"}${codexAppServerClient?.lastError ? `，${codexAppServerClient.lastError}` : ""}；首次 /new codex 时按需启动`));
+    const processBridge = await inspectProcessBridge(extensionStoragePath);
+    checks.push(checkLine("跨客户端进程桥接", processBridge.installed,
+      processBridge.installed
+        ? `已部署；Codex 共享服务 ${processBridge.sharedCodexState}${processBridge.sharedCodexPid ? `，PID ${processBridge.sharedCodexPid}` : ""}`
+        : "未部署；运行“安装 Codex/Claude Code 进程桥接”后，官方 VS Code 与独立 CLI 才会共享同一后端"));
   }
 
   try {

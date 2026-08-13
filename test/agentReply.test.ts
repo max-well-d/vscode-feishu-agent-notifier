@@ -165,6 +165,61 @@ test("always creates a persistent managed fork before replying to an external Co
   assert.equal(publicResumeSpawned, false);
 });
 
+test("adopts an external Codex session without changing its session id when the shared server is available", async () => {
+  const source: AgentSession = {
+    ...codex,
+    sessionId: "shared-source",
+    ownership: "external",
+    completionEvidence: "authoritative"
+  };
+  let forkAttempted = false;
+  let adoptedCallback = "";
+  const managed: ManagedCodexExecutor = {
+    adoptThread: async (session) => ({
+      ...session,
+      ownership: "managed",
+      managedBackend: "codex-app-server"
+    }),
+    forkThread: async () => {
+      forkAttempted = true;
+      throw new Error("must not fork");
+    },
+    runTurn: async (session) => ({
+      exitCode: 0,
+      durationMs: 1,
+      outputTail: "same session",
+      sessionId: session.sessionId,
+      turnId: "shared-turn",
+      backend: "codex-app-server"
+    })
+  };
+  const runner = new AgentReplyRunner(
+    10_000,
+    undefined,
+    async () => "codex",
+    managed,
+    undefined,
+    async (_job, session) => { adoptedCallback = session.sessionId; }
+  );
+  const job: AgentReplyJob = {
+    id: "job-adopt",
+    chatId: "chat",
+    inboundMessageId: "inbound",
+    session: { ...source },
+    originalSession: { ...source },
+    anchorTurnId: "source-turn",
+    prompt: "continue",
+    policy: "planOnly"
+  };
+
+  const result = await runner.run(job, new AbortController().signal);
+  assert.equal(result.sessionId, "shared-source");
+  assert.equal(job.session.sessionId, "shared-source");
+  assert.equal(job.session.ownership, "managed");
+  assert.equal(adoptedCallback, "shared-source");
+  assert.equal(forkAttempted, false);
+});
+
 test("rejects an external Codex reply without an exact turn anchor before opening the session", async () => {
   const source: AgentSession = {
     ...codex,

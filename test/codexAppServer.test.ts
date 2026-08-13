@@ -177,6 +177,6 @@ test("refuses to resume an externally owned thread before starting App Server", 
     status: "completed",
     ownership: "external",
     completionEvidence: "authoritative"
-  }, "continue", "planOnly", new AbortController().signal, 10_000), /拒绝直接打开外部 Codex 会话/);
+  }, "continue", "planOnly", new AbortController().signal, 10_000), /拒绝直接执行未接管的外部 Codex 会话/);
   assert.equal(spawned, false);
 });

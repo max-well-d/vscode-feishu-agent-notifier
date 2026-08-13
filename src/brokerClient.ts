@@ -87,6 +87,10 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
     return this.call("POST", "/threads/fork", { source, sourceTurnId, policy });
   }
 
+  public async adoptThread(source: AgentSession, policy: RemoteExecutionPolicy): Promise<AgentSession> {
+    return this.call("POST", "/threads/adopt", { source, policy });
+  }
+
   public async readThreadMetadata(threadId: string): Promise<CodexThreadMetadata> {
     return this.call("GET", `/threads/${encodeURIComponent(threadId)}/metadata`);
   }

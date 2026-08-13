@@ -16,6 +16,10 @@ export interface AgentReplyResult {
 }
 
 export interface ManagedCodexExecutor {
+  adoptThread?(
+    source: AgentSession,
+    policy: RemoteExecutionPolicy
+  ): Promise<AgentSession>;
   forkThread(
     source: AgentSession,
     sourceTurnId: string,
@@ -74,7 +78,8 @@ export class AgentReplyRunner {
     private readonly spawnImpl: typeof spawn = spawn,
     private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>,
     private readonly managedCodex?: ManagedCodexExecutor,
-    private readonly onRemoteBranchCreated?: (job: AgentReplyJob, session: AgentSession) => Promise<void>
+    private readonly onRemoteBranchCreated?: (job: AgentReplyJob, session: AgentSession) => Promise<void>,
+    private readonly onSessionAdopted?: (job: AgentReplyJob, session: AgentSession) => Promise<void>
   ) {}
 
   public async run(job: AgentReplyJob, signal: AbortSignal): Promise<AgentReplyResult> {
@@ -158,18 +163,31 @@ export class AgentReplyRunner {
   }
 
   /**
-   * Never resume an externally owned Codex thread in this process. Codex uses
-   * single-writer thread persistence, and keeping a resumed thread loaded in a
-   * second App Server can prevent the official VS Code extension from opening
-   * that thread. A remote reply therefore always continues on a persistent,
-   * plugin-owned fork anchored to the quoted completed turn.
+   * Prefer adopting the exact thread in the shared App Server. Older clients
+   * that still own a private writer fail adoption and fall back to an exact,
+   * persistent fork anchored to the quoted completed turn.
    */
   private async runExternalCodexBranch(
     job: AgentReplyJob,
     signal: AbortSignal
   ): Promise<AgentReplyResult> {
     if (!this.managedCodex) {
-      throw new Error("为保护原 Codex 会话，外部会话只能在持久化远程分支中续写；当前托管执行器不可用");
+      throw new Error("外部 Codex 会话需要共享 App Server 接管或安全分支；当前托管执行器不可用");
+    }
+    if (this.managedCodex.adoptThread) {
+      let adopted: AgentSession | undefined;
+      try {
+        adopted = await this.managedCodex.adoptThread(job.originalSession, job.policy);
+      } catch (error) {
+        if (!job.anchorTurnId) {
+          throw new Error(`无法无损接管原 Codex 会话，且完成通知没有精确 turnId：${normalizeError(error).message}`);
+        }
+      }
+      if (adopted) {
+        await this.onSessionAdopted?.(job, adopted);
+        Object.assign(job.session, adopted);
+        return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+      }
     }
     if (!job.anchorTurnId) {
       throw new Error("为保护原 Codex 会话，远程续写必须引用包含精确 turnId 的完成通知");

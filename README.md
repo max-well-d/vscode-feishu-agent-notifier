@@ -25,13 +25,14 @@
   - 飞书自建应用机器人：通过 `open_id`、`user_id`、`email` 或 `chat_id` 指定目标。
 - 应用机器人模式支持飞书 WebSocket 长连接入站，不需要公网服务器或内网穿透。
 - 引用一条插件通知即可精确恢复其 Codex/Claude Code 会话；也可列出、选择、命名历史本地会话或创建新会话。
-- `/new codex` 使用官方 Codex App Server stdio 协议创建由插件单独管理的持久化会话，支持权威运行状态、完成事件、取消和显式 `/steer`。
+- `/new codex` 使用官方 Codex App Server 协议创建持久化会话，支持权威运行状态、完成事件、取消和显式 `/steer`。
 - Codex App Server 现在由独立 Session Broker 持有，不再属于 Extension Host；VS Code 窗口重载后会重连同一 Broker，并补取重载期间的真实完成结果。
 - 可运行“打开本地/飞书共享 Codex 会话”，在 VS Code 面板和飞书中共同操作同一个托管 thread；界面会显示“本地优先/远程接管”和输入来源。
 - `/new cc` 会启动原版 Claude Code CLI，并通过官方 Channel 协议把飞书输入注入这个正在运行的本地会话；Hook 会把临时 Channel 路由迁移到真实 Claude session ID。
 - Codex 与 Claude Code 权限请求可同步到本地和飞书；飞书使用 `/approve <ID>` 或 `/deny <ID>` 回答，先到的有效回答生效。
 - 外部 VS Code/CLI 会话只有在收到权威完成事件后才能续写；不再根据 transcript 文件静默时间猜测任务结束。
-- 外部 Codex session 的飞书回复始终从被引用的精确完成 turn 创建持久化远程分支，不会在第二个 App Server 中直接 resume 原 session；原 session 不会被占用或关闭，插件重启后仍继续使用同一分支。
+- 可选进程桥接让官方 Codex VS Code、独立 Codex TUI、Claude Code VS Code、独立 Claude Code CLI 与飞书使用相同后端；VS Code 不再是会话所有者，只是客户端之一。
+- 历史 Codex session 会先按原 Session ID 无损接入共享 App Server；旧私有 App Server 仍持有 writer 时才从被引用的精确 turn 创建安全分支。
 - 卡片副标题显示真实 session 名称、短 session ID、项目和时间；`/alias` 设置的本地别名优先显示。
 - 远程回复按会话串行执行，支持超时、取消、重复事件去重和最多 20 条排队保护。
 - 远程执行默认关闭；可选择只读规划，或显式继承本机 Agent 权限。用户、群聊和群聊 @ 均有独立白名单策略。
@@ -52,7 +53,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.14.2.vsix
+code --install-extension .\feishu-agent-notifier-0.16.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -68,6 +69,8 @@ code --install-extension .\feishu-agent-notifier-0.14.2.vsix
 5. 运行 `飞书 Agent 通知：发送测试消息`。
 6. 运行 `飞书 Agent 通知：安装/更新 Codex 与 Claude Code 通知接入`。
 7. 运行 `飞书 Agent 通知：运行自检与修复`。
+
+需要让官方 VS Code Agent 与独立 CLI 也成为同一飞书会话的本地客户端时，再显式运行 `飞书 Agent 通知：安装 Codex/Claude Code 进程桥接`。该操作不会在扩展升级时自动执行。
 
 本地提醒默认开启。可运行 `飞书 Agent 通知：发送本地测试提醒` 单独测试；通过 `localNotificationMode` 选择 `always`、`whenUnfocused` 或 `off`。实时过程消息默认只发飞书，不逐条弹出 VS Code 提醒；如需要可开启 `localNotificationRealtime`。
 
@@ -90,9 +93,25 @@ code --install-extension .\feishu-agent-notifier-0.14.2.vsix
 - `remote-sessions.json`：会话 ID、名称、工作目录、消息路由和远程分支映射；不保存对话 transcript 或完整远程指令正文。
 - `paused-workspaces.json`：暂停通知的工作区列表。
 - `broker-state.json` / `broker-completions.json`：交接状态和最多 100 条尚未由 Extension Host 确认的托管完成事件。
+- `codex-shared.json` / `process-bridge/`：共享 Codex 服务描述、启动器、原 Agent 路径和可恢复的设置备份；不包含飞书凭据。
 - `pending-events/`：仅在离线队列启用时暂存完整待投递事件；不希望回复正文落盘时可关闭 `queueWhenOffline`。
 
 路径必须是绝对路径或以 `~/` 开头。修改后窗口会重载；跨磁盘迁移也受支持，并且不会覆盖目标目录已有的同名数据。Hook 运行脚本、随机接收令牌和一个最小的数据目录定位文件仍位于 VS Code 私有目录，飞书凭据继续只存入 `SecretStorage`。
+
+### 跨 VS Code/CLI 进程桥接
+
+运行“安装 Codex/Claude Code 进程桥接”后，扩展会在当前 `dataDirectory/process-bridge` 生成两个本地启动器，并备份以下用户设置：
+
+- OpenAI Codex：`chatgpt.cliExecutable`
+- Claude Code：`claudeCode.claudeProcessWrapper`
+
+设置备份是普通 JSON 文件，只保存在自定义数据目录，不使用 Windows 注册表。运行“恢复进程桥接前的 Agent 设置”只会在设置仍指向本插件启动器时恢复旧值，不会覆盖用户后来手动填写的新路径。安装和卸载都不会强制终止正在运行的 Agent。
+
+Codex 启动器把官方 VS Code App Server 的 stdio 数据代理到一个独立的官方 App Server WebSocket；该服务只监听随机的 `127.0.0.1` 端口。独立 Codex TUI 通过官方 `--remote` 参数连接同一服务。Claude Code 启动器保留原版二进制和全部参数，仅为会话进程注入本插件的官方 Channel 配置与随机 Channel ID。
+
+命令执行后，输出日志会给出可直接在普通终端运行的 `codex-feishu` / `claude-feishu` 启动器绝对路径。因此桥接不依赖 VS Code 终端；VS Code 关闭后本地 Agent 仍可运行，但飞书长连接目前仍需要至少一个扩展窗口在线。
+
+兼容边界：Codex 的共享 App Server、`--remote` 与 App Server JSON-RPC 是公开接口；OpenAI VS Code 的 `chatgpt.cliExecutable` 当前标注为开发设置，未来扩展升级可能改变启动参数，完整自检会报告桥接状态。Claude Code 使用公开的 `claudeProcessWrapper` 和 Channel 参数。已经在桥接安装前启动的进程不能热注入：空闲的历史 Codex 可保持原 ID 接管；正在被旧 App Server 写入的 Codex 使用安全分支；历史 Claude Code 应在 turn 结束后通过 `claude-feishu --resume <完整 Session ID>` 重开，正在执行的 Claude turn 不会被冒险迁移。
 
 ### Webhook 模式
 
@@ -142,20 +161,20 @@ code --install-extension .\feishu-agent-notifier-0.14.2.vsix
 
 会话分为两类：
 
-- **共享托管**：`/new codex` 和本地共享面板连接独立 Session Broker 持有的同一个 App Server thread；每轮使用 `turn/start`，完成以 `turn/completed` 为准。`/new cc` 启动原版 Claude Code CLI，并用官方 Channel 向当前运行中的本地会话注入飞书输入。两者都不会为每条飞书消息另开一个 resume 进程。
-- **外部会话**：由官方 VS Code 插件或独立 CLI 创建。插件只会在 Stop/task-complete 等权威事件确认结束后处理回复。外部 Codex 一律创建精确 turn 的持久化分支，外部 Claude Code 使用官方 `--fork-session`；仅从磁盘发现、没有完成证据的会话会被拒绝，而不是冒险并发续写。
+- **共享托管**：`/new codex`、本地共享面板和已桥接的官方 Codex 客户端连接同一个 App Server；每轮使用 `turn/start`，完成以 `turn/completed` 为准。`/new cc` 和已桥接的 Claude Code 进程使用官方 Channel 将本机与飞书输入送入同一个真实 Session ID。两者都不会为每条飞书消息另开一个 resume 进程。
+- **外部会话**：由桥接安装前的官方 VS Code 插件或普通 CLI 创建。插件只会在 Stop/task-complete 等权威事件确认结束后处理回复。外部 Codex 先尝试原 ID 接入共享 App Server，检测到旧 writer 冲突才创建精确 turn 分支；外部 Claude Code 仍使用官方 `--fork-session` 兼容路径。仅从磁盘发现、没有完成证据的会话会被拒绝。
 
-要获得真正的本地/飞书同会话，应从插件状态菜单启动“共享 Codex 会话”或“共享 Claude Code”。已经由官方 Codex VS Code 界面或普通 CLI 单独打开的进程仍有自己的唯一写入者；公开协议不支持插件事后夺取其 stdio 连接，因此这类会话继续使用“完成后续写或安全分支”兼容路径。
+要让之后启动的官方 VS Code/CLI 会话天然共享，安装进程桥接；也可以继续从插件状态菜单显式启动“共享 Codex 会话”或“共享 Claude Code”。插件不会向已经运行的终端发送按键，也不会事后夺取已有进程的 stdio。迁移只发生在安全的 turn 边界。
 
 Session Broker 仅监听 `127.0.0.1`，使用随机 bearer token，并把普通状态写入 `dataDirectory`。它独立于 Extension Host，因此窗口重载不会停止已托管的 Codex turn；重载期间完成的结果进入本地收件箱，新 Host 连接后才确认和投递。Broker 重启时，遗留的 `running` 只能恢复为“状态未知”，不会伪造仍在执行或已经完成。
 
-外部 Codex 会话的远程分支会严格沿用通知中记录的原始工作目录，不会切换到某个子仓库，也不会改变 `planOnly` / `inherit` 权限策略。插件不会再对外部 Codex 原 session 启动 `codex exec resume`。
+外部 Codex 会话会先通过共享 App Server 的 `thread/resume` 接管同一个 Session ID；成功后本地和飞书继续同一历史。若旧版/未桥接 App Server 仍持有唯一 writer，远程分支会严格沿用通知中记录的原始工作目录，不会切换到某个子仓库，也不会改变 `planOnly` / `inherit` 权限策略。
 
-扩展不会终止 IDE App Server，也不会尝试成为外部 Codex 原 session 的第二个写入者。它会在执行任何远程 turn 前使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入私有 JSON 会话索引。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时会在打开原会话前失败。
+扩展不会终止旧 IDE App Server，也不会强占外部 Codex writer。只有原 ID 接管失败时，才使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入私有 JSON 会话索引。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时会安全失败。
 
 外部 Claude Code session 即使仍在 VS Code Claude 进程中打开，也不再等待原进程退出。扩展会对卡片中的完整 session ID 执行公开的 `--resume <session-id> --fork-session`，保留原 IDE session，并把 CLI 返回的新 session ID 持久化为飞书独占分支；后续继续引用原卡片时会进入同一个分支。每张带元数据的飞书卡片正文顶部都会明确显示完整的 `Claude Code Session ID` 或 `Codex Session ID`。
 
-扩展不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序。共享 Codex 使用公开 App Server；共享 Claude Code 使用官方 Channel（当前为 research preview，启动时会显式使用 development-channel 参数）。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 关闭时飞书长连接也会关闭；已经交给 Broker 的 Codex turn 可以继续并保存完成结果，但关闭期间不能接收新的飞书指令。同一个飞书 App ID 应只在一台电脑上启用入站连接。
+扩展不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序文件。共享 Codex 使用公开 App Server；共享 Claude Code 使用官方 Channel（当前为 research preview，启动时会显式使用 development-channel 参数）。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 关闭时飞书长连接也会关闭；已经交给 Broker 的 Codex turn 可以继续并保存完成结果，但关闭期间不能接收新的飞书指令。同一个飞书 App ID 应只在一台电脑上启用入站连接。
 
 扩展会自动查找 OpenAI 与 Claude Code 官方 VS Code 扩展内置的 CLI，因此不要求扩展宿主和终端拥有相同的 `PATH`。若使用独立安装或定制 CLI，可在可视化设置中填写 `Codex Executable Path` / `Claude Executable Path`；完整自检会显示最终解析到的路径。
 

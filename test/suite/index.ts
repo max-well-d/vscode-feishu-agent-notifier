@@ -17,7 +17,9 @@ export async function run(): Promise<void> {
     "feishuAgentNotifier.clearPending",
     "feishuAgentNotifier.configureRemoteControl",
     "feishuAgentNotifier.showRemoteSessions",
-    "feishuAgentNotifier.cancelRemoteReplies"
+    "feishuAgentNotifier.cancelRemoteReplies",
+    "feishuAgentNotifier.installProcessBridge",
+    "feishuAgentNotifier.uninstallProcessBridge"
   ]) {
     assert.ok(commands.includes(command), `missing registered command: ${command}`);
   }

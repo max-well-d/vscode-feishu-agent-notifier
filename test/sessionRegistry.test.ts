@@ -18,6 +18,19 @@ const event: AgentEvent = {
   occurredAt: "2026-08-13T00:00:00.000Z"
 };
 
+test("persists a process-bridged hook session as managed without changing its id", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-shared-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  const session = await registry.recordEvent({
+    ...event,
+    sessionId: "shared-session",
+    managedBackend: "codex-app-server"
+  });
+  assert.equal(session.sessionId, "shared-session");
+  assert.equal(session.ownership, "managed");
+  assert.equal(session.managedBackend, "codex-app-server");
+});
+
 test("persists message routes, chat selection, aliases, and inbound deduplication", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-"));
   const file = path.join(root, "registry.json");

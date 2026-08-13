@@ -62,6 +62,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
   const codex = new CodexAppServerClient({
     executable: async () => options.codexExecutable,
     version: () => options.version,
+    sharedDataDirectory: options.dataDirectory,
     onState: (state, detail) => {
       codexState = state;
       codexError = detail;
@@ -136,6 +137,17 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       sendJson(response, 200, session);
       return;
     }
+    if (request.method === "POST" && url.pathname === "/threads/adopt") {
+      const body = await readJson(request);
+      const session = await codex.adoptThread(
+        objectField(body, "source") as unknown as AgentSession,
+        policyField(body)
+      );
+      handoffs.set(session.sessionId, handoffs.get(session.sessionId) ?? initialHandoffState(session.sessionId));
+      await persistHandoffs(statePath, handoffs);
+      sendJson(response, 200, session);
+      return;
+    }
     const metadataMatch = /^\/threads\/([^/]+)\/metadata$/.exec(url.pathname);
     if (request.method === "GET" && metadataMatch) {
       const metadata = await codex.readThreadMetadata(decodeURIComponent(metadataMatch[1]));
@@ -148,7 +160,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       if (session.ownership !== "managed" || session.managedBackend !== "codex-app-server") {
         sendJson(response, 409, {
           code: "EXTERNAL_SESSION_REQUIRES_FORK",
-          error: "拒绝直接打开外部 Codex 会话；请先创建插件托管的持久化分支"
+          error: "拒绝直接执行未接管的外部 Codex 会话；请先无损接入共享服务，或创建安全分支"
         });
         return;
       }

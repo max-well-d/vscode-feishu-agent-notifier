@@ -93,6 +93,7 @@ export class HookEventNormalizer {
       eventId: messageId,
       origin: "display-hook",
       channelId: stringValue(input.__notifier_channel_id) || undefined,
+      managedBackend: managedBackend(input.__notifier_bridge_backend),
       sessionId,
       turnId,
       cwd,
@@ -130,6 +131,10 @@ function firstMissingIndex(chunks: Map<number, string>, finalIndex: number): num
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function managedBackend(value: unknown): AgentEvent["managedBackend"] {
+  return value === "codex-app-server" || value === "claude-channel" ? value : undefined;
 }
 
 function delay(milliseconds: number): Promise<void> {

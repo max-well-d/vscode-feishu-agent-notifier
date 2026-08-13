@@ -22,7 +22,9 @@
 
 ### 会话与远程回复
 
-- 改进 Codex 和 Claude Code 分支来源展示，在会话列表中同时显示源 session 与当前远程 session。
+- 对 OpenAI VS Code `chatgpt.cliExecutable` 的版本变化增加兼容矩阵和自动降级提示。
+- 为进程桥接增加显式的共享 Codex 服务停止/重启入口，并在有活动 turn 时拒绝停止。
+- 改进 Codex 和 Claude Code 兼容分支来源展示，在会话列表中同时显示源 session 与当前远程 session。
 - 增加远程分支归档、解除绑定和安全清理入口。
 - 提供单次远程任务权限覆盖，不要求修改全局执行策略。
 - 为冲突、超时、取消和 Agent 版本不兼容提供更明确的飞书回执。

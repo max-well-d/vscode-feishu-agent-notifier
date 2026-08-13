@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -59,7 +59,9 @@
     "onCommand:feishuAgentNotifier.showRemoteSessions",
     "onCommand:feishuAgentNotifier.cancelRemoteReplies",
     "onCommand:feishuAgentNotifier.openManagedCodexSession",
-    "onCommand:feishuAgentNotifier.startManagedClaudeSession"
+    "onCommand:feishuAgentNotifier.startManagedClaudeSession",
+    "onCommand:feishuAgentNotifier.installProcessBridge",
+    "onCommand:feishuAgentNotifier.uninstallProcessBridge"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -135,6 +137,14 @@
       {
         "command": "feishuAgentNotifier.startManagedClaudeSession",
         "title": "飞书 Agent 通知：启动本地/飞书共享 Claude Code 会话"
+      },
+      {
+        "command": "feishuAgentNotifier.installProcessBridge",
+        "title": "飞书 Agent 通知：安装 Codex/Claude Code 进程桥接"
+      },
+      {
+        "command": "feishuAgentNotifier.uninstallProcessBridge",
+        "title": "飞书 Agent 通知：恢复进程桥接前的 Agent 设置"
       }
     ],
     "walkthroughs": [
@@ -470,7 +480,7 @@
   },
   "scripts": {
     "compile": "tsc -p .",
-    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node22 --external:vscode --external:./larkSdk --outfile=dist/extension.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/larkSdk.js && esbuild src/brokerEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/broker.js && esbuild src/claudeChannelEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/claude-channel.js",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node22 --external:vscode --external:./larkSdk --outfile=dist/extension.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/larkSdk.js && esbuild src/brokerEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/broker.js && esbuild src/claudeChannelEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/claude-channel.js && esbuild src/agentBridge.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/agent-bridge.js",
     "vscode:prepublish": "npm run compile && npm run bundle",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test out/test/*.test.js",

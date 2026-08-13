@@ -26,6 +26,20 @@ test("normalizes a Codex Stop event without truncating the final message", () =>
   assert.equal(event.status, "completed");
 });
 
+test("marks hook events emitted by a process bridge as managed sessions", () => {
+  const event = normalizeAgentEvent({
+    __notifier_source: "claude-code",
+    __notifier_channel_id: "channel-1",
+    __notifier_bridge_backend: "claude-channel",
+    hook_event_name: "Stop",
+    session_id: "claude-shared",
+    cwd: "C:\\work\\project-a",
+    last_assistant_message: "done"
+  });
+  assert.equal(event.channelId, "channel-1");
+  assert.equal(event.managedBackend, "claude-channel");
+});
+
 test("distinguishes legacy Codex notify from official Stop hooks", () => {
   const event = normalizeAgentEvent({
     __notifier_source: "codex",

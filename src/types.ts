@@ -19,6 +19,7 @@ export interface AgentEvent {
   sessionName?: string;
   inputOrigin?: "local" | "feishu";
   channelId?: string;
+  managedBackend?: "codex-app-server" | "claude-channel";
   message: string;
   occurredAt: string;
 }

@@ -1,6 +1,7 @@
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import readline from "node:readline";
 import { AgentReplyResult } from "./agentReply";
+import { ensureSharedCodexServer } from "./codexSharedServer";
 import { AgentSession, RemoteExecutionPolicy } from "./types";
 
 type JsonObject = Record<string, unknown>;
@@ -30,6 +31,7 @@ export interface CodexAppServerOptions {
   version: () => string;
   spawnImpl?: typeof spawn;
   requestTimeoutMs?: number;
+  sharedDataDirectory?: string;
   log?: {
     debug(message: string): void;
     info(message: string): void;
@@ -54,6 +56,7 @@ export interface CodexThreadMetadata {
  */
 export class CodexAppServerClient {
   private process: ChildProcessWithoutNullStreams | undefined;
+  private socket: WebSocket | undefined;
   private reader: readline.Interface | undefined;
   private starting: Promise<void> | undefined;
   private nextRequestId = 1;
@@ -182,6 +185,36 @@ export class CodexAppServerClient {
     };
   }
 
+  public async adoptThread(source: AgentSession, policy: RemoteExecutionPolicy): Promise<AgentSession> {
+    await this.ensureStarted();
+    const result = await this.request("thread/resume", {
+      threadId: source.sessionId,
+      cwd: source.cwd,
+      approvalPolicy: policy === "inherit" ? "on-request" : "never",
+      ...(policy === "planOnly" ? { sandbox: "read-only" } : {})
+    });
+    const thread = objectValue(result.thread);
+    const threadId = stringValue(thread?.id);
+    if (!threadId || threadId !== source.sessionId) {
+      throw new Error("Codex App Server 无法无损接管原会话");
+    }
+    this.loadedThreads.add(threadId);
+    const name = source.alias || source.name || stringValue(thread?.name) || source.project;
+    this.metadataCache.set(threadId, {
+      value: { id: threadId, name, preview: stringValue(thread?.preview) || undefined },
+      cachedAt: Date.now()
+    });
+    return {
+      ...source,
+      sessionId: threadId,
+      name,
+      lastSeenAt: new Date().toISOString(),
+      ownership: "managed",
+      completionEvidence: "authoritative",
+      managedBackend: "codex-app-server"
+    };
+  }
+
   public async readThreadMetadata(threadId: string): Promise<CodexThreadMetadata> {
     const cached = this.metadataCache.get(threadId);
     if (cached && Date.now() - cached.cachedAt < 30_000) {
@@ -212,7 +245,7 @@ export class CodexAppServerClient {
     timeoutMs: number
   ): Promise<AgentReplyResult> {
     if (session.ownership !== "managed" || session.managedBackend !== "codex-app-server") {
-      throw new Error("拒绝直接打开外部 Codex 会话；请先创建插件托管的持久化分支");
+      throw new Error("拒绝直接执行未接管的外部 Codex 会话；请先无损接入共享服务，或创建安全分支");
     }
     const startedAt = Date.now();
     await this.ensureThread(session, policy);
@@ -311,6 +344,8 @@ export class CodexAppServerClient {
     this.reader = undefined;
     this.process?.kill();
     this.process = undefined;
+    this.socket?.close();
+    this.socket = undefined;
     this.rejectAll(new Error("Codex App Server 已停止"));
     this.loadedThreads.clear();
     this.metadataCache.clear();
@@ -360,7 +395,7 @@ export class CodexAppServerClient {
     if (this.disposed) {
       return Promise.reject(new Error("Codex App Server 客户端已释放"));
     }
-    if (this.process && this._state === "ready") {
+    if ((this.process || this.socket?.readyState === WebSocket.OPEN) && this._state === "ready") {
       return Promise.resolve();
     }
     if (this.starting) {
@@ -378,6 +413,10 @@ export class CodexAppServerClient {
     if (!executable) {
       this.setState("failed", "未找到 Codex CLI");
       throw new Error("未找到 Codex CLI；请在扩展设置中指定可执行文件路径");
+    }
+    if (this.options.sharedDataDirectory) {
+      await this.startSharedConnection(executable);
+      return;
     }
     const spawnImpl = this.options.spawnImpl ?? spawn;
     let child: ChildProcessWithoutNullStreams;
@@ -425,6 +464,64 @@ export class CodexAppServerClient {
     }
   }
 
+  private async startSharedConnection(executable: string): Promise<void> {
+    const descriptor = await ensureSharedCodexServer({
+      dataDirectory: this.options.sharedDataDirectory as string,
+      executable,
+      appServerArgs: ["-c", "features.code_mode_host=true", "app-server"],
+      startTimeoutMs: this.options.requestTimeoutMs,
+      log: this.options.log
+    });
+    const socket = new WebSocket(descriptor.endpoint);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("连接 Codex 共享 App Server 超时")), this.options.requestTimeoutMs ?? 20_000);
+      timer.unref();
+      socket.addEventListener("open", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      socket.addEventListener("error", () => {
+        clearTimeout(timer);
+        reject(new Error(`无法连接 Codex 共享 App Server：${descriptor.endpoint}`));
+      }, { once: true });
+    });
+    this.socket = socket;
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data === "string") {
+        this.handleLine(event.data);
+      } else if (event.data instanceof ArrayBuffer) {
+        this.handleLine(Buffer.from(event.data).toString("utf8"));
+      }
+    });
+    socket.addEventListener("close", () => this.handleProcessEnd(new Error("Codex 共享 App Server 连接已关闭")));
+    socket.addEventListener("error", () => this.handleProcessEnd(new Error("Codex 共享 App Server 连接错误")));
+    try {
+      await this.initializeConnection();
+      this.options.log?.info("Codex 共享 App Server 托管执行器已就绪。");
+    } catch (error) {
+      socket.close();
+      this.socket = undefined;
+      this.setState("failed", (error as Error).message);
+      throw error;
+    }
+  }
+
+  private async initializeConnection(): Promise<void> {
+    await this.request("initialize", {
+      clientInfo: {
+        name: "feishu_agent_notifier",
+        title: "Feishu Agent Notifier",
+        version: this.options.version()
+      },
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false
+      }
+    });
+    this.notify("initialized", {});
+    this.setState("ready");
+  }
+
   private request(method: string, params: JsonObject): Promise<JsonObject> {
     const id = this.nextRequestId++;
     const timeoutMs = this.options.requestTimeoutMs ?? 20_000;
@@ -450,6 +547,10 @@ export class CodexAppServerClient {
   }
 
   private send(message: JsonObject): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+      return;
+    }
     const child = this.process;
     if (!child?.stdin.writable) {
       throw new Error("Codex App Server 未运行");
@@ -546,8 +647,9 @@ export class CodexAppServerClient {
   }
 
   private handleProcessEnd(error: Error): void {
-    if (this.process) {
+    if (this.process || this.socket) {
       this.process = undefined;
+      this.socket = undefined;
       this.reader?.close();
       this.reader = undefined;
       this.loadedThreads.clear();

@@ -2,7 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const DATA_ENTRIES = ["remote-sessions.json", "paused-workspaces.json", "pending-events", "broker-state.json", "broker-completions.json"] as const;
+const DATA_ENTRIES = [
+  "remote-sessions.json",
+  "paused-workspaces.json",
+  "pending-events",
+  "broker-state.json",
+  "broker-completions.json",
+  "codex-shared.json",
+  "process-bridge"
+] as const;
 
 export function resolveDataDirectory(
   configuredPath: string,

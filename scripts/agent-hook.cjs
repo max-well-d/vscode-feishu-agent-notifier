@@ -41,6 +41,7 @@ async function main() {
   const event = JSON.parse(raw);
   event.__notifier_source = args.source || "unknown";
   event.__notifier_channel_id = process.env.FEISHU_AGENT_CHANNEL_ID || "";
+  event.__notifier_bridge_backend = process.env.FEISHU_AGENT_BRIDGE_BACKEND || "";
   const body = Buffer.from(JSON.stringify(event), "utf8");
   const port = Number(args.port || 37561);
   try {
