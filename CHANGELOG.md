@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0
 
 - Fix a critical single-writer regression: quoted replies to externally owned Codex sessions now always create a persistent fork at the exact completed turn and never resume or retain the original thread in the notifier App Server.
 - Reject external Codex threads at the reply runner, Broker HTTP boundary, and App Server client boundary before a process can claim the source session.
