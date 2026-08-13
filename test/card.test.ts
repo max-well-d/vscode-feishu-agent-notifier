@@ -7,7 +7,7 @@ const event: AgentEvent = {
   source: "codex",
   eventName: "agent-turn-complete",
   status: "completed",
-  sessionId: "session",
+  sessionId: "1bae9e2e-c129-4826-b17c-611d7ae749ad",
   turnId: "turn",
   cwd: "C:\\work\\project",
   project: "project",
@@ -23,9 +23,11 @@ test("builds a visual card header and Markdown body", () => {
   assert.match(card.header.title.content, /Codex/);
   assert.match(card.header.subtitle.content, /project/);
   assert.match(card.header.subtitle.content, /修复飞书远程控制/);
-  assert.match(card.header.subtitle.content, /session/);
-  assert.equal(card.body.elements[0].tag, "markdown");
-  assert.equal(card.body.elements[0].content, "## 结果\n\n**完成**");
+  assert.match(card.header.subtitle.content, /1bae9e2e-c129-4826-b17c-611d7ae749ad/);
+  assert.match(card.body.elements[0].content, /Session ID/);
+  assert.match(card.body.elements[0].content, /1bae9e2e-c129-4826-b17c-611d7ae749ad/);
+  assert.equal(card.body.elements[1].tag, "markdown");
+  assert.equal(card.body.elements[1].content, "## 结果\n\n**完成**");
 });
 
 test("turns a GitHub Markdown table into a native Feishu table", () => {
@@ -47,7 +49,8 @@ test("turns a GitHub Markdown table into a native Feishu table", () => {
 });
 
 test("renders realtime messages with a distinct blue header", () => {
-  const card = buildFeishuCard({ ...event, status: "progress" }, "正在执行测试", true) as any;
+  const card = buildFeishuCard({ ...event, source: "claude-code", status: "progress" }, "正在执行测试", true) as any;
   assert.equal(card.header.template, "blue");
   assert.match(card.header.title.content, /实时消息/);
+  assert.match(card.body.elements[0].content, /Claude Code Session ID/);
 });

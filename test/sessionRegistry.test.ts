@@ -181,6 +181,7 @@ test("persists an exact completion-to-managed-branch binding across reloads", as
   assert.equal(resolved?.session.sessionId, "managed-fork");
   assert.equal(resolved?.session.name, "demo · 飞书");
   assert.equal(resolved?.turnId, "turn-1");
+  assert.equal((await reloaded.resolveRemoteBranch(source, event.turnId))?.sessionId, "managed-fork");
   assert.equal((await reloaded.selectedForChat("oc_branch"))?.sessionId, "managed-fork");
   assert.equal((await reloaded.getSession("session-1"))?.sessionId, "session-1");
 

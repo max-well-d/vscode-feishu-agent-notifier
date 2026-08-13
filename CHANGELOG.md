@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.2
+
+- Fix quoted replies to an external Claude Code session waiting indefinitely while the same session remains open in the VS Code Claude process.
+- Resume the exact Claude session context with `--fork-session`, preserve the original IDE session, and persist the returned remote branch ID for later Feishu replies.
+- Reuse the existing source-session/source-turn branch mapping so replies to the original Claude card continue in one managed remote branch across reloads.
+- Show the complete Codex or Claude Code session ID in every metadata card body and header instead of only the first eight characters.
+- Show complete session IDs in text notifications, acknowledgements, completion receipts, and session-selection output.
+- Extend automated coverage to 94 unit/process tests.
+
 ## 0.14.1
 
 - Add a visual local data-directory picker and the `feishuAgentNotifier.dataDirectory` setting for session routing metadata, pause state, and the offline queue.

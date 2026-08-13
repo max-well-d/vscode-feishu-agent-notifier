@@ -22,8 +22,8 @@ export function buildFeishuCard(
   const progress = event.status === "progress";
   const partLabel = part && part.total > 1 ? ` · ${part.index}/${part.total}` : "";
   const sessionLabel = event.sessionName
-    ? `${truncate(event.sessionName, 48)} · ${event.sessionId.slice(0, 8)}`
-    : event.sessionId ? event.sessionId.slice(0, 8) : "未知会话";
+    ? `${truncate(event.sessionName, 48)} · ${event.sessionId}`
+    : event.sessionId || "未知会话";
   const header = includeMetadata
     ? {
       template: failed ? "red" : progress ? "blue" : "green",
@@ -48,9 +48,23 @@ export function buildFeishuCard(
     body: {
       direction: "vertical",
       padding: "12px 12px 12px 12px",
-      elements: markdownToCardElements(markdown)
+      elements: includeMetadata
+        ? [sessionIdElement(event), ...markdownToCardElements(markdown)]
+        : markdownToCardElements(markdown)
     }
   };
+}
+
+function sessionIdElement(event: AgentEvent): Record<string, unknown> {
+  const source = event.source === "claude-code" ? "Claude Code" : event.source === "codex" ? "Codex" : "Agent";
+  return {
+    tag: "markdown",
+    content: `**${source} Session ID：** \`${escapeInlineCode(event.sessionId || "未知会话")}\``
+  };
+}
+
+function escapeInlineCode(value: string): string {
+  return value.replace(/`/g, "\\`");
 }
 
 export function markdownToCardElements(markdown: string): Array<Record<string, unknown>> {

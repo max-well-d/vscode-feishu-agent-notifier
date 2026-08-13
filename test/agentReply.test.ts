@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId, extractCodexTurnId, hasGitMetadataAncestor, isCodexActiveWriterConflict, ManagedCodexExecutor } from "../src/agentReply";
+import { AgentReplyJob, AgentReplyQueue, AgentReplyResult, AgentReplyRunner, buildAgentCommand, extractClaudeSessionId, extractCodexTurnId, hasGitMetadataAncestor, isCodexActiveWriterConflict, ManagedCodexExecutor, shouldForkClaudeSession } from "../src/agentReply";
 import { AgentSession } from "../src/types";
 
 const codex: AgentSession = {
@@ -42,6 +42,12 @@ test("builds public resume commands without bypass flags", () => {
   assert.ok(claudeCommand.args.includes("plan"));
   assert.ok(!buildAgentCommand({ ...codex, sessionId: "new:test" }, "planOnly").args.includes("resume"));
   assert.ok(!buildAgentCommand({ ...codex, source: "claude-code", sessionId: "new:test" }, "planOnly").args.includes("--resume"));
+  const claudeFork = buildAgentCommand(
+    { ...codex, source: "claude-code", ownership: "external", completionEvidence: "authoritative" },
+    "inherit",
+    { forkClaudeSession: true }
+  );
+  assert.ok(claudeFork.args.includes("--fork-session"));
 });
 
 test("allows non-Git Codex resume only for an authoritative external session", () => {
@@ -146,11 +152,55 @@ test("falls back to a persistent managed fork when Codex reports an active write
     prompt: "continue",
     policy: "planOnly"
   };
+
   const result = await runner.run(job, new AbortController().signal);
   assert.equal(result.sessionId, "forked-session");
   assert.equal(result.turnId, "fork-turn");
   assert.equal(job.session.sessionId, "forked-session");
   assert.equal(forkedCallback, "forked-session");
+});
+
+test("forks an active external Claude session and persists the returned session id", async () => {
+  const source: AgentSession = {
+    ...codex,
+    source: "claude-code",
+    sessionId: "claude-source",
+    name: "Claude source",
+    ownership: "external",
+    completionEvidence: "authoritative"
+  };
+  let callbackSession: AgentSession | undefined;
+  let spawnedArgs: string[] = [];
+  const runner = new AgentReplyRunner(
+    10_000,
+    successfulClaudeForkSpawn((args) => { spawnedArgs = args; }),
+    async () => "claude",
+    undefined,
+    async (_job, session) => { callbackSession = session; }
+  );
+  const job: AgentReplyJob = {
+    id: "job-claude-fork",
+    chatId: "chat",
+    inboundMessageId: "inbound",
+    session: { ...source },
+    originalSession: { ...source },
+    anchorTurnId: "claude-source-turn",
+    prompt: "continue",
+    policy: "inherit"
+  };
+
+  assert.equal(shouldForkClaudeSession(job), true);
+
+  const result = await runner.run(job, new AbortController().signal);
+
+  assert.ok(spawnedArgs.includes("--fork-session"));
+  assert.deepEqual(spawnedArgs.slice(0, 2), ["--resume", "claude-source"]);
+  assert.equal(result.sessionId, "claude-remote-branch");
+  assert.equal(job.session.sessionId, "claude-remote-branch");
+  assert.equal(job.session.ownership, "managed");
+  assert.equal(job.session.managedBackend, "claude-cli");
+  assert.equal(callbackSession?.forkedFromSessionId, "claude-source");
+  assert.equal(callbackSession?.forkedFromTurnId, "claude-source-turn");
 });
 
 function activeWriterSpawn(): typeof spawn {
@@ -169,6 +219,27 @@ function activeWriterSpawn(): typeof spawn {
       stderr,
       kill: () => true,
       pid: 4321
+    }) as unknown as ChildProcessWithoutNullStreams;
+  }) as unknown as typeof spawn;
+}
+
+function successfulClaudeForkSpawn(onSpawn: (args: string[]) => void): typeof spawn {
+  return ((_executable: string, args: readonly string[]) => {
+    onSpawn([...args]);
+    const processEvents = new EventEmitter();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    stdin.once("finish", () => setImmediate(() => {
+      stdout.write('{"type":"result","session_id":"claude-remote-branch","result":"done"}\n');
+      processEvents.emit("close", 0);
+    }));
+    return Object.assign(processEvents, {
+      stdin,
+      stdout,
+      stderr,
+      kill: () => true,
+      pid: 5432
     }) as unknown as ChildProcessWithoutNullStreams;
   }) as unknown as typeof spawn;
 }

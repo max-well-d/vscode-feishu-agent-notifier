@@ -48,7 +48,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.14.1.vsix
+code --install-extension .\feishu-agent-notifier-0.14.2.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -141,6 +141,8 @@ code --install-extension .\feishu-agent-notifier-0.14.1.vsix
 外部 Codex 会话会严格沿用通知中记录的原始工作目录。若该目录不是 Git 工作树，扩展只对“权威完成且精确绑定”的既有会话续写加入 Codex 官方 `--skip-git-repo-check` 兼容参数；不会切换到某个子仓库，也不会因此改变 `planOnly` / `inherit` 权限策略。
 
 若 Codex 返回 `already has an active writer`，扩展不会终止 IDE App Server。v0.14.0 起会使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入私有 JSON 会话索引。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时不会自动猜测。
+
+外部 Claude Code session 即使仍在 VS Code Claude 进程中打开，也不再等待原进程退出。扩展会对卡片中的完整 session ID 执行公开的 `--resume <session-id> --fork-session`，保留原 IDE session，并把 CLI 返回的新 session ID 持久化为飞书独占分支；后续继续引用原卡片时会进入同一个分支。每张带元数据的飞书卡片正文顶部都会明确显示完整的 `Claude Code Session ID` 或 `Codex Session ID`。
 
 扩展不向已有终端发送按键，也不修改 Codex 或 Claude Code 程序。无持久化、已删除、其他电脑、Codex/Claude 云端及首版 WSL/SSH/Dev Container 会话无法恢复。VS Code 必须保持运行；同一个飞书 App ID 应只在一台电脑上启用入站连接，因为飞书长连接的多个客户端采用集群分发而不是广播。
 

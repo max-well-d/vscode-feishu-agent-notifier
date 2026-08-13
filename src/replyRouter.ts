@@ -229,11 +229,15 @@ export class ReplyRouter {
       return;
     }
     void result.completion.catch(() => undefined);
-    const waiting = session.status === "progress" || result.position > 1;
+    const branchingClaude = session.source === "claude-code"
+      && ownership !== "managed"
+      && session.completionEvidence === "authoritative"
+      && Boolean(anchorTurnId);
+    const waiting = (!branchingClaude && session.status === "progress") || result.position > 1;
     const replyId = await this.options.reply(message,
       `${waiting ? "已排队" : "已接收"}：${formatSession(session)}\n`
       + `策略：${policy === "planOnly" ? "只读规划" : "继承本机权限"}`
-      + `\n会话：${ownership === "managed" ? "飞书托管" : "外部完成后续写"}`
+      + `\n会话：${ownership === "managed" ? "飞书托管" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : "外部完成后续写"}`
       + `${waiting ? `\n队列位置：${result.position}` : ""}`
     );
     if (replyId) {
@@ -248,7 +252,7 @@ export class ReplyRouter {
       return quoted;
     }
     const selected = await this.options.registry.selectedForChat(message.chatId);
-    return selected ? { session: selected } : undefined;
+    return selected ? { session: selected, turnId: selected.lastCompletedTurnId } : undefined;
   }
 
   private async resolveSelector(selector: string): Promise<AgentSession | undefined> {
@@ -285,7 +289,7 @@ function formatSessions(sessions: AgentSession[]): string {
 function formatSession(session: AgentSession): string {
   const name = session.alias || session.name || session.project || path.basename(session.cwd) || session.sessionId.slice(0, 8);
   const source = session.source === "claude-code" ? "Claude Code" : "Codex";
-  return `${source}/${name} (${session.sessionId.slice(0, 8)})`;
+  return `${source}/${name} (${session.sessionId})`;
 }
 
 function remoteSessionName(prompt: string, project: string): string {

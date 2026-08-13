@@ -65,7 +65,7 @@ export class AgentReplyRunner {
     private readonly spawnImpl: typeof spawn = spawn,
     private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>,
     private readonly managedCodex?: ManagedCodexExecutor,
-    private readonly onCodexForked?: (job: AgentReplyJob, session: AgentSession) => Promise<void>
+    private readonly onRemoteBranchCreated?: (job: AgentReplyJob, session: AgentSession) => Promise<void>
   ) {}
 
   public async run(job: AgentReplyJob, signal: AbortSignal): Promise<AgentReplyResult> {
@@ -99,14 +99,15 @@ export class AgentReplyRunner {
       && job.session.completionEvidence === "authoritative"
       && !job.session.sessionId.startsWith("new:")
       && !await hasGitMetadataAncestor(job.session.cwd);
-    const command = buildAgentCommand(job.session, job.policy, { allowNonGitWorkspace });
+    const forkClaudeSession = shouldForkClaudeSession(job);
+    const command = buildAgentCommand(job.session, job.policy, { allowNonGitWorkspace, forkClaudeSession });
     const resolvedExecutable = await this.executableResolver?.(job.session.source as "codex" | "claude-code");
     if (this.executableResolver && !resolvedExecutable) {
       const displayName = job.session.source === "codex" ? "Codex" : "Claude Code";
       throw new Error(`未找到 ${displayName} CLI；请在扩展设置中指定可执行文件路径`);
     }
     try {
-      return await runChildProcess(
+      const result = await runChildProcess(
         this.spawnImpl,
         resolvedExecutable ?? command.executable,
         command.args,
@@ -116,6 +117,14 @@ export class AgentReplyRunner {
         this.timeoutMs,
         job.session.source
       );
+      if (forkClaudeSession
+        && result.sessionId
+        && result.sessionId !== job.session.sessionId) {
+        const forked = claudeRemoteBranch(job.originalSession, result.sessionId, job.anchorTurnId as string);
+        await this.onRemoteBranchCreated?.(job, forked);
+        Object.assign(job.session, forked);
+      }
+      return result;
     } catch (error) {
       return this.runForkFallback(job, normalizeError(error), signal);
     }
@@ -138,7 +147,7 @@ export class AgentReplyRunner {
     let forked: AgentSession;
     try {
       forked = await this.managedCodex.forkThread(job.originalSession, job.anchorTurnId, job.policy);
-      await this.onCodexForked?.(job, forked);
+      await this.onRemoteBranchCreated?.(job, forked);
     } catch (forkError) {
       throw new Error(`原 Codex 会话正被本机占用，创建持久化远程分支失败：${normalizeError(forkError).message}`);
     }
@@ -260,7 +269,7 @@ export class AgentReplyQueue {
 export function buildAgentCommand(
   session: AgentSession,
   policy: RemoteExecutionPolicy,
-  options: { allowNonGitWorkspace?: boolean } = {}
+  options: { allowNonGitWorkspace?: boolean; forkClaudeSession?: boolean } = {}
 ): { executable: string; args: string[] } {
   if (session.source === "codex") {
     const args = ["exec"];
@@ -289,6 +298,9 @@ export function buildAgentCommand(
     ];
     if (!session.sessionId.startsWith("new:")) {
       args.unshift("--resume", session.sessionId);
+      if (options.forkClaudeSession) {
+        args.push("--fork-session");
+      }
     }
     if (policy === "planOnly") {
       args.push("--permission-mode", "plan");
@@ -296,6 +308,32 @@ export function buildAgentCommand(
     return { executable: process.platform === "win32" ? "claude.exe" : "claude", args };
   }
   throw new Error(`不支持恢复 Agent：${session.source}`);
+}
+
+export function shouldForkClaudeSession(job: AgentReplyJob): boolean {
+  return job.session.source === "claude-code"
+    && job.session.ownership !== "managed"
+    && job.session.completionEvidence === "authoritative"
+    && Boolean(job.anchorTurnId);
+}
+
+function claudeRemoteBranch(source: AgentSession, sessionId: string, sourceTurnId: string): AgentSession {
+  const sourceName = source.alias || source.name || source.project || "Claude Code";
+  const suffix = " · 飞书";
+  const name = sourceName.endsWith(suffix) ? sourceName : `${sourceName}${suffix}`;
+  return {
+    ...source,
+    sessionId,
+    name,
+    alias: undefined,
+    lastSeenAt: new Date().toISOString(),
+    status: "completed",
+    ownership: "managed",
+    completionEvidence: "authoritative",
+    managedBackend: "claude-cli",
+    forkedFromSessionId: source.sessionId,
+    forkedFromTurnId: sourceTurnId
+  };
 }
 
 export async function hasGitMetadataAncestor(cwd: string): Promise<boolean> {

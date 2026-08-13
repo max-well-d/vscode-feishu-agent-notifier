@@ -263,6 +263,14 @@ export class SessionRegistry {
     });
   }
 
+  public resolveRemoteBranch(source: AgentSession, sourceTurnId: string): Promise<AgentSession | undefined> {
+    return this.read((document) => {
+      const sourceKey = agentSessionKey(source.source, source.sessionId);
+      const branch = document.remoteBranches[remoteBranchKey(sourceKey, sourceTurnId)];
+      return branch ? document.sessions[branch.managedSessionKey] : undefined;
+    });
+  }
+
   public updateExecutionState(
     original: AgentSession,
     status: AgentSession["status"],

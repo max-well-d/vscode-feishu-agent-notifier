@@ -18,7 +18,7 @@ import {
 } from "./localNotification";
 import { LocalHookServer } from "./server";
 import { buildStatusPresentation, StatusSnapshot } from "./statusUi";
-import { AgentReplyJob, AgentReplyQueue, AgentReplyRunner } from "./agentReply";
+import { AgentReplyJob, AgentReplyQueue, AgentReplyRunner, shouldForkClaudeSession } from "./agentReply";
 import { CodexAppServerClient } from "./codexAppServer";
 import { ReplyRouter } from "./replyRouter";
 import { discoverLocalSessions } from "./sessionCatalog";
@@ -382,7 +382,8 @@ function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueu
         const replyId = await replyToInbound(
           job.inboundMessageId,
           job.chatId,
-          `原会话正在本机 Codex 中打开，已创建持久化远程分支：${formatAgentSession(forked)}\n后续飞书回复将继续绑定该分支。`
+          `${forked.source === "claude-code" ? "原 Claude Code 会话仍在本机使用" : "原会话正在本机 Codex 中打开"}`
+          + `，已创建持久化远程分支：${formatAgentSession(forked)}\n后续飞书回复将继续绑定该分支。`
         );
         if (replyId) {
           await sessionRegistry.recordMessageRoute(replyId, forked);
@@ -550,6 +551,16 @@ async function startFeishuInbound(context: vscode.ExtensionContext): Promise<voi
 }
 
 async function waitUntilAgentSessionIdle(job: AgentReplyJob, signal: AbortSignal): Promise<void> {
+  if (job.anchorTurnId && job.session.ownership !== "managed") {
+    const existingBranch = await sessionRegistry?.resolveRemoteBranch(job.originalSession, job.anchorTurnId);
+    if (existingBranch) {
+      Object.assign(job.session, existingBranch);
+      return;
+    }
+  }
+  if (shouldForkClaudeSession(job)) {
+    return;
+  }
   const maximumWait = Math.max(1, getSetting<number>("remoteActiveWaitMinutes", 120)) * 60_000;
   const startedAt = Date.now();
   while (!signal.aborted) {
@@ -598,7 +609,7 @@ async function enrichAgentEventSessionName(event: AgentEvent): Promise<void> {
 function formatAgentSession(session: AgentSession): string {
   const source = session.source === "claude-code" ? "Claude Code" : "Codex";
   const name = session.alias || session.name || session.project || path.basename(session.cwd) || "未命名";
-  return `${source}/${name} (${session.sessionId.slice(0, 8)})`;
+  return `${source}/${name} (${session.sessionId})`;
 }
 
 async function replyToInbound(messageId: string, chatId: string, text: string): Promise<string | undefined> {
