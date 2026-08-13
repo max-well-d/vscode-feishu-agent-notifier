@@ -1,4 +1,4 @@
-import { DeliveryMode, DeliveryTiming, RemoteExecutionPolicy } from "./types";
+import { DeliveryMode, DeliveryTiming, RemoteExecutionPolicy, remoteExecutionPolicyLabel } from "./types";
 
 export interface StatusSnapshot {
   initializing: boolean;
@@ -130,7 +130,7 @@ function remoteDetail(snapshot: StatusSnapshot): string {
   if (!snapshot.remoteExecutionPolicy || snapshot.remoteExecutionPolicy === "disabled") {
     return "已禁用";
   }
-  const policy = snapshot.remoteExecutionPolicy === "planOnly" ? "只读规划" : "继承本机权限";
+  const policy = remoteExecutionPolicyLabel(snapshot.remoteExecutionPolicy);
   const state = snapshot.inboundState === "connected"
     ? "已连接"
     : snapshot.inboundState === "connecting"

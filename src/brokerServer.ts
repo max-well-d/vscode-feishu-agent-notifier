@@ -442,7 +442,9 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       capabilities: {
         sameServerThreadAttach: true,
         exactTurnRecovery: true,
-        ownedTurnCancellation: true
+        ownedTurnCancellation: true,
+        explicitFullAccess: true,
+        unlimitedTurns: true
       },
       state: codexState === "failed" ? "failed" : "ready",
       codexState,
@@ -684,5 +686,5 @@ function numberField(value: Record<string, unknown>, key: string, fallback: numb
 }
 
 function policyField(value: Record<string, unknown>): RemoteExecutionPolicy {
-  return value.policy === "inherit" ? "inherit" : "planOnly";
+  return value.policy === "inherit" || value.policy === "fullAccess" ? value.policy : "planOnly";
 }

@@ -23,7 +23,7 @@ import { deployHookRuntime, deployLegacyWindowMonitor, HookRuntimeInstallation }
 import { CodexTranscriptWatcher } from "../codexTranscriptWatcher";
 import { migrateLegacySharedCodexServer } from "../codexSharedServer";
 import { ClaudeTranscriptWatcher } from "../claudeTranscriptWatcher";
-import { eventDeduplicationKey, isCrossOriginDuplicate } from "../event";
+import { eventDeduplicationKey, shouldSuppressCrossOriginDuplicate } from "../event";
 import { DesktopConfigStore } from "./configStore";
 
 interface DesktopSnapshot {
@@ -72,7 +72,11 @@ let approvalTimer: NodeJS.Timeout | undefined;
 const announcedApprovals = new Set<string>();
 const inboundMessages = new Map<string, ChannelInboundMessage>();
 const recentEvents = new Map<string, number>();
-const recentBodies = new Map<string, { at: number; origin: import("../types").AgentEvent["origin"] }>();
+const recentBodies = new Map<string, {
+  at: number;
+  origin: import("../types").AgentEvent["origin"];
+  status: import("../types").AgentEvent["status"];
+}>();
 let dataDirectory = "";
 let quitting = false;
 let installedHookRuntime: HookRuntimeInstallation | undefined;
@@ -199,7 +203,7 @@ function createRuntime(): void {
   sessionRegistry = new SessionRegistry(path.join(dataDirectory, "remote-sessions.json"));
   replyQueue = new AgentReplyQueue(
     new AgentReplyRunner(
-      30 * 60_000,
+      0,
       undefined,
       findAgentExecutable,
       broker,
@@ -365,8 +369,8 @@ function duplicateEventKind(event: import("../types").AgentEvent): "exact" | "cr
   recentEvents.set(eventKey, now);
   const bodyKey = `${event.source}:${event.sessionId}:${event.message}`;
   const previous = recentBodies.get(bodyKey);
-  recentBodies.set(bodyKey, { at: now, origin: event.origin });
-  return previous && now - previous.at < 30_000 && isCrossOriginDuplicate(previous.origin, event.origin)
+  recentBodies.set(bodyKey, { at: now, origin: event.origin, status: event.status });
+  return previous && now - previous.at < 30_000 && shouldSuppressCrossOriginDuplicate(previous, event)
     ? "cross-origin"
     : undefined;
 }
@@ -733,7 +737,11 @@ async function loadDesktopSettings(): Promise<DesktopSettings> {
 
 function validateDesktopSettings(value: DesktopSettings): DesktopSettings {
   const policy = value?.remoteExecutionPolicy;
-  const remoteExecutionPolicy: RemoteExecutionPolicy = policy === "disabled" || policy === "inherit" ? policy : "planOnly";
+  const remoteExecutionPolicy: RemoteExecutionPolicy = policy === "disabled"
+    || policy === "inherit"
+    || policy === "fullAccess"
+    ? policy
+    : "planOnly";
   const defaultWorkspace = typeof value?.defaultWorkspace === "string" ? value.defaultWorkspace.trim() : "";
   if (defaultWorkspace && !path.isAbsolute(defaultWorkspace)) {
     throw new Error("默认工作目录必须是绝对路径");

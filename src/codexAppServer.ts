@@ -104,8 +104,7 @@ export class CodexAppServerClient {
     await this.ensureStarted();
     const result = await this.request("thread/start", {
       cwd,
-      approvalPolicy: policy === "inherit" ? "on-request" : "never",
-      ...(policy === "planOnly" ? { sandbox: "read-only" } : {}),
+      ...legacyPermissionOverrides(policy),
       serviceName: "feishu_agent_notifier"
     });
     const thread = objectValue(result.thread);
@@ -150,8 +149,7 @@ export class CodexAppServerClient {
       threadId: source.sessionId,
       lastTurnId: sourceTurnId,
       cwd: source.cwd,
-      approvalPolicy: policy === "inherit" ? "on-request" : "never",
-      ...(policy === "planOnly" ? { sandbox: "read-only" } : {}),
+      ...legacyPermissionOverrides(policy),
       ephemeral: false,
       excludeTurns: true,
       deferGoalContinuation: true
@@ -264,10 +262,7 @@ export class CodexAppServerClient {
     const start = await this.request("turn/start", {
       threadId: session.sessionId,
       input: [{ type: "text", text: prompt }],
-      approvalPolicy: policy === "inherit" ? "on-request" : "never",
-      ...(policy === "planOnly"
-        ? { sandboxPolicy: { type: "readOnly", networkAccess: false } }
-        : {})
+      ...turnPermissionOverrides(policy)
     });
     const turn = objectValue(start.turn);
     const turnId = stringValue(turn?.id);
@@ -286,14 +281,17 @@ export class CodexAppServerClient {
     try {
       const completion = this.waitForTurn(turnId);
       const recoveredCompletion = this.pollTurnUntilTerminal(session.sessionId, turnId, polling.signal);
-      const timed = new Promise<JsonObject>((_resolve, reject) => {
-        timeout = setTimeout(() => {
-          void this.interrupt(session.sessionId, turnId);
-          reject(new Error(`远程 Agent 回复超过 ${Math.ceil(timeoutMs / 60_000)} 分钟，已终止`));
-        }, timeoutMs);
-        timeout.unref();
-      });
-      const finished = await Promise.race([completion, recoveredCompletion, timed]);
+      const waits: Promise<JsonObject>[] = [completion, recoveredCompletion];
+      if (timeoutMs > 0) {
+        waits.push(new Promise<JsonObject>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            void this.interrupt(session.sessionId, turnId);
+            reject(new Error(`远程 Agent 回复超过 ${Math.ceil(timeoutMs / 60_000)} 分钟，已终止`));
+          }, timeoutMs);
+          timeout.unref();
+        }));
+      }
+      const finished = await Promise.race(waits);
       const statusValue = stringValue(finished.status);
       if (signal.aborted || statusValue === "interrupted") {
         throw new Error("远程 Agent 回复已取消");
@@ -398,8 +396,7 @@ export class CodexAppServerClient {
     const resumed = await this.request("thread/resume", {
       threadId: session.sessionId,
       cwd: session.cwd,
-      approvalPolicy: policy === "inherit" ? "on-request" : "never",
-      ...(policy === "planOnly" ? { sandbox: "read-only" } : {})
+      ...legacyPermissionOverrides(policy)
     });
     const thread = objectValue(resumed.thread);
     if (stringValue(thread?.id) !== session.sessionId) {
@@ -768,6 +765,31 @@ function remoteForkName(value: string, threadId: string): string {
   const fallback = `远程会话 ${threadId.slice(0, 8)}`;
   const base = cleanThreadName(value) || fallback;
   return `${Array.from(base).slice(0, Math.max(1, 80 - Array.from(suffix).length)).join("")}${suffix}`;
+}
+
+function legacyPermissionOverrides(policy: RemoteExecutionPolicy): JsonObject {
+  if (policy === "fullAccess") {
+    return { approvalPolicy: "never", sandbox: "danger-full-access" };
+  }
+  if (policy === "planOnly" || policy === "disabled") {
+    return { approvalPolicy: "never", sandbox: "read-only" };
+  }
+  // True inheritance: do not replace either permission dimension. App Server
+  // keeps the effective defaults of the existing thread or local config.
+  return {};
+}
+
+function turnPermissionOverrides(policy: RemoteExecutionPolicy): JsonObject {
+  if (policy === "fullAccess") {
+    return { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
+  }
+  if (policy === "planOnly" || policy === "disabled") {
+    return {
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly", networkAccess: false }
+    };
+  }
+  return {};
 }
 
 function objectValue(value: unknown): JsonObject | undefined {

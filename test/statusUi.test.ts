@@ -63,7 +63,7 @@ test("shows bidirectional readiness and inbound failures", () => {
     codexManagedState: "ready"
   });
   assert.match(connected.text, /双向/);
-  assert.match(connected.details.join("\n"), /只读规划，已连接，运行 0 \/ 排队 1/);
+  assert.match(connected.details.join("\n"), /只读，已连接，运行 0 \/ 排队 1/);
   assert.match(connected.details.join("\n"), /Codex 托管已就绪/);
   const broker = buildStatusPresentation({
     ...ready,

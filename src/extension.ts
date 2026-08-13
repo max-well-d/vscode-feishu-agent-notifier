@@ -6,7 +6,7 @@ import { AgentCapabilities, detectAgentCapabilities } from "./agentCapabilities"
 import { resolveAgentExecutable, ResumableAgentSource } from "./agentExecutable";
 import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
-import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
+import { eventDeduplicationKey, shouldSuppressCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { FeishuInboundClient } from "./feishuInbound";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
@@ -40,7 +40,8 @@ import {
   MessageFormat,
   NotifierConfig,
   ReceiveIdType,
-  RemoteExecutionPolicy
+  RemoteExecutionPolicy,
+  remoteExecutionPolicyLabel
 } from "./types";
 import { parseIdList, validateIdListInput, validateReceiveIdInput } from "./remoteConfiguration";
 import { prepareDataDirectory, resolveDataDirectory } from "./dataDirectory";
@@ -105,7 +106,11 @@ let statusSnapshot: StatusSnapshot = {
   activeDeliveries: 0
 };
 const recentEvents = new Map<string, number>();
-const recentMessageBodies = new Map<string, { timestamp: number; origin: AgentEvent["origin"] }>();
+const recentMessageBodies = new Map<string, {
+  timestamp: number;
+  origin: AgentEvent["origin"];
+  status: AgentEvent["status"];
+}>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   activeExtensionId = context.extension.id;
@@ -453,10 +458,10 @@ function stopReceiverTakeoverMonitor(): void {
 }
 
 function createAgentReplyQueue(context: vscode.ExtensionContext): AgentReplyQueue {
-  const timeoutMinutes = getSetting<number>("remoteReplyTimeoutMinutes", 30);
+  const timeoutMinutes = getSetting<number>("remoteReplyTimeoutMinutes", 0);
   return new AgentReplyQueue(
     new AgentReplyRunner(
-      Math.max(1, timeoutMinutes) * 60_000,
+      Math.max(0, timeoutMinutes) * 60_000,
       undefined,
       async (source) => {
         await refreshAgentExecutables();
@@ -697,7 +702,7 @@ async function startManagedClaudeSession(
     throw new Error("请先打开目标工作区");
   }
   if (workspace.policy === "disabled") {
-    throw new Error("请先把远程执行策略设为 planOnly 或 inherit");
+    throw new Error("请先启用只读、跟随会话或完全访问策略");
   }
   await codexAppServerClient.refresh();
   const channelId = crypto.randomUUID();
@@ -910,7 +915,7 @@ function remoteStatusText(context: vscode.ExtensionContext): string {
   const policy = getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
   return [
     `Feishu Agent Notifier ${context.extension.packageJSON.version as string}`,
-    `远程策略：${policy === "disabled" ? "禁用" : policy === "planOnly" ? "只读规划" : "继承本机权限"}`,
+    `远程策略：${remoteExecutionPolicyLabel(policy)}`,
     `长连接：${feishuInboundState}${feishuInboundError ? `（${feishuInboundError}）` : ""}`,
     `运行中：${agentReplyQueue?.activeCount ?? 0}`,
     `排队：${agentReplyQueue?.pendingCount ?? 0}`,
@@ -1022,11 +1027,11 @@ async function enqueueEventAsync(
   if (queueOnFailure && getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime") {
     messageKey = realtimeMessageKey(event);
     const observed = recentMessageBodies.get(messageKey);
-    if (observed && isCrossOriginDuplicate(observed.origin, event.origin)) {
+    if (observed && shouldSuppressCrossOriginDuplicate(observed, event)) {
       output?.info(`忽略 transcript/Hook 重复消息：${event.source}/${event.sessionId}`);
       return Promise.resolve();
     }
-    recentMessageBodies.set(messageKey, { timestamp: now, origin: event.origin });
+    recentMessageBodies.set(messageKey, { timestamp: now, origin: event.origin, status: event.status });
   }
   void showLocalNotification(event).catch((error) => {
     output?.warn(`本地提醒失败：${(error as Error).message}`);
@@ -1949,7 +1954,7 @@ async function runDiagnostics(context: vscode.ExtensionContext): Promise<void> {
 
   const remotePolicy = getSetting<RemoteExecutionPolicy>("remoteExecutionPolicy", "disabled");
   checks.push(checkLine("飞书远程回复策略", true,
-    remotePolicy === "disabled" ? "已禁用" : remotePolicy === "planOnly" ? "只读规划" : "继承本机权限"));
+    remoteExecutionPolicyLabel(remotePolicy)));
   if (remotePolicy !== "disabled") {
     checks.push(checkLine("Codex CLI", Boolean(agentExecutablePaths.codex),
       agentExecutablePaths.codex ?? "未找到；可在扩展设置中指定路径"));
@@ -2103,11 +2108,18 @@ async function configureRemoteControl(context: vscode.ExtensionContext): Promise
       picked: currentPolicy === "disabled"
     },
     {
-      label: "$(warning) 继承本机权限",
-      description: "可能修改文件、执行命令并消耗 Agent 配额",
-      detail: "仅在完全信任白名单用户和目标群时启用。",
+      label: "$(sync) 跟随当前会话",
+      description: "不覆盖共享会话权限；新会话使用本机默认配置",
+      detail: "适合在本机与远程之间无缝切换。",
       policy: "inherit",
       picked: currentPolicy === "inherit"
+    },
+    {
+      label: "$(warning) 完全访问",
+      description: "跳过审批和沙箱，可执行任意本机操作",
+      detail: "仅在完全信任所有白名单用户和目标群时启用。",
+      policy: "fullAccess",
+      picked: currentPolicy === "fullAccess"
     }
   ], {
     title: "飞书远程操控 · 1/6 执行权限",
@@ -2219,9 +2231,9 @@ async function configureRemoteControl(context: vscode.ExtensionContext): Promise
     requireMention = mentionChoice.required;
   }
 
-  if (policy.policy === "inherit") {
+  if (policy.policy === "fullAccess") {
     const confirmation = await vscode.window.showWarningMessage(
-      "继承本机权限后，飞书白名单用户可以让 Codex/Claude Code 修改文件、执行命令并消耗配额。确定启用吗？",
+      "完全访问会跳过 Codex/Claude Code 的审批与沙箱。飞书白名单用户可以执行任意本机操作。确定启用吗？",
       { modal: true },
       "我理解风险并启用"
     );
@@ -2241,7 +2253,7 @@ async function configureRemoteControl(context: vscode.ExtensionContext): Promise
   });
   const groupSummary = allowedChats.length > 0 ? `，群聊 ${allowedChats.length} 个` : "，仅单聊";
   await vscode.window.showInformationMessage(
-    `远程操控配置已保存：${policy.policy === "planOnly" ? "只读规划" : "继承本机权限"}，用户 ${allowedUsers.length} 个${groupSummary}。`
+    `远程操控配置已保存：${remoteExecutionPolicyLabel(policy.policy)}，用户 ${allowedUsers.length} 个${groupSummary}。`
   );
 }
 

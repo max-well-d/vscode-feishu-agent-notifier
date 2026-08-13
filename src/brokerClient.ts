@@ -118,7 +118,7 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
       policy,
       origin,
       timeoutMs
-      }, signal, timeoutMs + 30_000);
+      }, signal, timeoutMs > 0 ? timeoutMs + 30_000 : 0);
       return result;
     } finally {
       signal.removeEventListener("abort", onAbort);
@@ -159,7 +159,7 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
       inboundMessageId,
       session
     });
-    while (!signal.aborted && Date.now() - startedAt < timeoutMs) {
+    while (!signal.aborted && (timeoutMs <= 0 || Date.now() - startedAt < timeoutMs)) {
       const outbound = await this.call<ClaudeChannelOutbound & { empty?: boolean }>(
         "GET",
         `/claude/channels/${encodeURIComponent(channelId)}/outbound/next`,
@@ -311,8 +311,8 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
       throw new Error("Session Broker 未连接");
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref();
+    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+    timer?.unref();
     const onAbort = (): void => controller.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
@@ -332,7 +332,7 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
       }
       return value as T;
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
   }
@@ -378,7 +378,9 @@ function isCompatibleBroker(descriptor: StoredBrokerDescriptor, snapshot: Broker
     && snapshot.pid === descriptor.pid
     && snapshot.capabilities?.sameServerThreadAttach === true
     && snapshot.capabilities?.exactTurnRecovery === true
-    && snapshot.capabilities?.ownedTurnCancellation === true;
+    && snapshot.capabilities?.ownedTurnCancellation === true
+    && snapshot.capabilities?.explicitFullAccess === true
+    && snapshot.capabilities?.unlimitedTurns === true;
 }
 
 async function retireIncompatibleBroker(

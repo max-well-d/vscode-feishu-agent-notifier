@@ -75,7 +75,7 @@ interface PendingJob {
 
 export class AgentReplyRunner {
   public constructor(
-    private readonly timeoutMs = 30 * 60 * 1000,
+    private readonly timeoutMs = 0,
     private readonly spawnImpl: typeof spawn = spawn,
     private readonly executableResolver?: (source: "codex" | "claude-code") => Promise<string | undefined>,
     private readonly managedCodex?: ManagedCodexExecutor,
@@ -378,7 +378,11 @@ export function buildAgentCommand(
   options: { allowNonGitWorkspace?: boolean; forkClaudeSession?: boolean } = {}
 ): { executable: string; args: string[] } {
   if (session.source === "codex") {
-    const args = ["exec"];
+    const args: string[] = [];
+    if (policy === "fullAccess") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    }
+    args.push("exec");
     if (policy === "planOnly") {
       args.push("--sandbox", "read-only");
     }
@@ -410,6 +414,8 @@ export function buildAgentCommand(
     }
     if (policy === "planOnly") {
       args.push("--permission-mode", "plan");
+    } else if (policy === "fullAccess") {
+      args.push("--dangerously-skip-permissions");
     }
     return { executable: process.platform === "win32" ? "claude.exe" : "claude", args };
   }
@@ -509,14 +515,16 @@ function runChildProcess(
       settled = true;
       reject(new Error(reason));
     };
-    const timeout = setTimeout(() => terminate(`远程 Agent 回复超过 ${Math.ceil(timeoutMs / 60_000)} 分钟，已终止`), timeoutMs);
-    timeout.unref();
+    const timeout = timeoutMs > 0
+      ? setTimeout(() => terminate(`远程 Agent 回复超过 ${Math.ceil(timeoutMs / 60_000)} 分钟，已终止`), timeoutMs)
+      : undefined;
+    timeout?.unref();
     const onAbort = (): void => terminate("远程 Agent 回复已取消");
     signal.addEventListener("abort", onAbort, { once: true });
     child.once("error", (error) => {
       if (!settled) {
         settled = true;
-        clearTimeout(timeout);
+        if (timeout) clearTimeout(timeout);
         signal.removeEventListener("abort", onAbort);
         reject(new Error(`无法启动 ${executable}：${error.message}`));
       }
@@ -526,7 +534,7 @@ function runChildProcess(
         return;
       }
       settled = true;
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       signal.removeEventListener("abort", onAbort);
       const result: AgentReplyResult = {
         exitCode: code ?? -1,

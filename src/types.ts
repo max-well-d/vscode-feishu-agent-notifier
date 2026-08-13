@@ -2,7 +2,14 @@ export type DeliveryMode = "webhook" | "app";
 export type ReceiveIdType = "open_id" | "user_id" | "email" | "chat_id";
 export type MessageFormat = "card" | "text";
 export type DeliveryTiming = "realtime" | "completion";
-export type RemoteExecutionPolicy = "disabled" | "planOnly" | "inherit";
+export type RemoteExecutionPolicy = "disabled" | "planOnly" | "inherit" | "fullAccess";
+
+export function remoteExecutionPolicyLabel(policy: RemoteExecutionPolicy): string {
+  if (policy === "disabled") return "已关闭";
+  if (policy === "planOnly") return "只读";
+  if (policy === "fullAccess") return "完全访问";
+  return "跟随当前会话";
+}
 export type AgentSessionOwnership = "external" | "managed";
 export type SessionCompletionEvidence = "authoritative" | "discovered";
 export type InputOrigin = "local" | "feishu" | `channel:${string}`;

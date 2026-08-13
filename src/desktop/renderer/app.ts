@@ -64,20 +64,18 @@ function renderView(): string {
 
 function renderOverview(): string {
   const connectedChannels = snapshot.channels.filter((item) => item.enabled && item.state === "connected").length;
+  const ready = snapshot.broker.state === "ready";
   return `
-    ${pageHeader("运行总览", "本机 Agent 会话、路由和远程 Channel 的统一控制面。", `<button class="button secondary" id="refresh-broker">刷新状态</button>`)}
-    <section class="hero">
-      <div><span class="eyebrow">SESSION BUS</span><h2>一个 Broker，多端共享</h2><p>官方 Codex / Claude Code 界面、本地 CLI 和远程 Channel 连接到同一会话总线，不再各自抢占 session writer。</p></div>
-      <div class="hero-state"><span class="big-dot ${snapshot.broker.state === "ready" ? "ok" : "warn"}"></span><strong>${snapshot.broker.state === "ready" ? "Broker 在线" : "Broker 未就绪"}</strong><small>${snapshot.broker.activeTurns} 个 turn 正在执行</small></div>
-    </section>
-    <section class="metrics">
-      ${metric("Agent", snapshot.agents.filter((agent) => agent.available).length, "已发现可执行文件")}
-      ${metric("会话", snapshot.sessions.length, "统一持久化索引")}
-      ${metric("Channels", connectedChannels, `${snapshot.channels.length} 个已安装`)}
-      ${metric("活动 Turn", snapshot.broker.activeTurns, snapshot.broker.codexState)}
+    ${pageHeader("总览", "Agent、会话与远程通道。", `<button class="button secondary" id="refresh-broker">刷新</button>`)}
+    <section class="status-summary ${ready ? "ready" : "warn"}">
+      <span class="big-dot ${ready ? "ok" : "warn"}"></span>
+      <div><strong>${ready ? "服务正常" : "服务未就绪"}</strong><small>Broker ${escapeHtml(snapshot.broker.state)} · Codex ${escapeHtml(snapshot.broker.codexState)}</small></div>
+      <div class="summary-count"><strong>${snapshot.broker.activeTurns}</strong><small>执行中</small></div>
+      <div class="summary-count"><strong>${connectedChannels}/${snapshot.channels.length}</strong><small>通道在线</small></div>
+      <div class="summary-count"><strong>${snapshot.sessions.length}</strong><small>会话</small></div>
     </section>
     <section class="grid two">
-      <article class="panel"><div class="panel-title"><h3>Agent 接入</h3><span>原版界面保留</span></div>${snapshot.agents.map(agentRow).join("")}</article>
+      <article class="panel"><div class="panel-title"><h3>Agent</h3><span>${snapshot.agents.filter((agent) => agent.available).length} 可用</span></div>${snapshot.agents.map(agentRow).join("")}</article>
       <article class="panel"><div class="panel-title"><h3>Channel 状态</h3><button class="text-button" data-view="channels">管理</button></div>${snapshot.channels.map(channelRow).join("") || empty("尚未安装 Channel")}</article>
     </section>
     ${snapshot.broker.error ? `<div class="notice error"><strong>Broker 错误</strong>${escapeHtml(snapshot.broker.error)}</div>` : ""}`;
@@ -133,26 +131,27 @@ function renderChannelEditor(channel: DesktopSnapshot["channels"][number]): stri
 
 function renderSystem(): string {
   return `
-    ${pageHeader("系统", "中间件生命周期、数据目录与诊断日志。")}
+    ${pageHeader("系统", "运行策略与本地数据。")}
     <section class="grid two">
       <article class="panel setting"><div><h3>数据目录</h3><p>普通配置、会话索引和日志保存在这里；系统目录只保存这一位置指针。</p><code>${escapeHtml(snapshot.dataDirectory)}</code></div><div class="button-row"><button class="button secondary" id="open-data">打开</button><button class="button primary" id="choose-data">更改</button></div></article>
       <article class="panel setting"><div><h3>Session Broker</h3><p>状态：${escapeHtml(snapshot.broker.state)} · Codex App Server：${escapeHtml(snapshot.broker.codexState)}</p><code>${snapshot.broker.activeTurns} active turns</code></div><button class="button secondary" id="refresh-broker">重新检查</button></article>
     </section>
     <form class="panel form system-form" id="system-form" data-draft-key="system">
-      <div class="panel-title"><h3>远程执行</h3><span>Core policy</span></div>
+      <div class="panel-title"><h3>远程执行</h3><span>白名单生效</span></div>
       <div class="form-grid">
         <label class="field"><span>执行策略</span><select name="remoteExecutionPolicy">
-          <option value="disabled" ${snapshot.settings.remoteExecutionPolicy === "disabled" ? "selected" : ""}>disabled · 禁止远程执行</option>
-          <option value="planOnly" ${snapshot.settings.remoteExecutionPolicy === "planOnly" ? "selected" : ""}>planOnly · 只读规划</option>
-          <option value="inherit" ${snapshot.settings.remoteExecutionPolicy === "inherit" ? "selected" : ""}>inherit · 继承本机权限</option>
-        </select></label>
+          <option value="disabled" ${snapshot.settings.remoteExecutionPolicy === "disabled" ? "selected" : ""}>关闭</option>
+          <option value="planOnly" ${snapshot.settings.remoteExecutionPolicy === "planOnly" ? "selected" : ""}>只读</option>
+          <option value="inherit" ${snapshot.settings.remoteExecutionPolicy === "inherit" ? "selected" : ""}>跟随当前会话</option>
+          <option value="fullAccess" ${snapshot.settings.remoteExecutionPolicy === "fullAccess" ? "selected" : ""}>完全访问</option>
+        </select><small>跟随会话不覆盖权限；完全访问会跳过审批和沙箱。</small></label>
         <label class="field"><span>新会话默认工作目录</span><input name="defaultWorkspace" value="${escapeHtml(snapshot.settings.defaultWorkspace)}" placeholder="D:\\code\\project"><small>仅用于 /new；历史会话使用自身目录</small></label>
         <label class="field"><span>Hook Receiver 端口</span><input name="receiverPort" type="number" min="1024" max="65535" value="${snapshot.settings.receiverPort}"><small>修改后需重启并重新安装 Agent 接入</small></label>
       </div>
       <div class="form-actions"><button class="button secondary" type="button" id="install-hooks">安装 / 更新 Agent 接入</button><button class="button primary" type="submit">保存系统策略</button></div>
       <p class="form-status" id="form-status"></p>
     </form>
-    <section class="panel logs"><div class="panel-title"><h3>最近日志</h3><span>仅本机</span></div><div class="log-list">${snapshot.logs.slice().reverse().map((entry) => `<div><time>${formatTime(entry.at)}</time><span class="log-level ${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span><p>${escapeHtml(entry.message)}</p></div>`).join("") || empty("暂无日志")}</div></section>`;
+    <details class="panel logs"><summary>最近日志 <span>仅本机</span></summary><div class="log-list">${snapshot.logs.slice().reverse().map((entry) => `<div><time>${formatTime(entry.at)}</time><span class="log-level ${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span><p>${escapeHtml(entry.message)}</p></div>`).join("") || empty("暂无日志")}</div></details>`;
 }
 
 function field(key: string, property: SchemaProperty, value: unknown, configured: boolean): string {
@@ -243,8 +242,14 @@ function bindView(): void {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
     const data = new FormData(form);
+    const policy = data.get("remoteExecutionPolicy") as DesktopSnapshot["settings"]["remoteExecutionPolicy"];
+    if (policy === "fullAccess"
+      && snapshot.settings.remoteExecutionPolicy !== "fullAccess"
+      && !confirm("完全访问会跳过 Agent 审批和沙箱。只应对完全可信的白名单用户启用。继续吗？")) {
+      return;
+    }
     void run(window.agentLink.saveSettings({
-      remoteExecutionPolicy: data.get("remoteExecutionPolicy") as DesktopSnapshot["settings"]["remoteExecutionPolicy"],
+      remoteExecutionPolicy: policy,
       defaultWorkspace: String(data.get("defaultWorkspace") ?? ""),
       receiverPort: Number(data.get("receiverPort"))
     }), "系统策略已保存").then((saved) => {
@@ -327,10 +332,6 @@ function formHasFocus(): boolean {
 
 function pageHeader(title: string, subtitle: string, action = ""): string {
   return `<header class="page-header"><div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p></div>${action}</header>`;
-}
-
-function metric(label: string, value: string | number, detail: string): string {
-  return `<article class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong><small>${escapeHtml(detail)}</small></article>`;
 }
 
 function agentRow(agent: DesktopSnapshot["agents"][number]): string {

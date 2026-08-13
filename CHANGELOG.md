@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.0
+
+- Deliver authoritative Claude Code `Stop` / `StopFailure` events even when the same body was already sent by `MessageDisplay` or transcript realtime capture, so the final card and quoted-reply route are marked completed.
+- Make `inherit` a true no-override mode for shared Codex threads instead of forcing `on-request`; add an explicit, separately confirmed `fullAccess` mode for Codex and Claude Code.
+- Remove the fixed 30-minute remote-turn deadline by default. Long Codex, Claude CLI, and Claude Channel work now waits for authoritative completion, failure, or `/cancel`; the compatibility extension can still opt into a finite timeout.
+- Simplify the Agent Link desktop UI with a compact status summary, flat panels, smaller navigation, clearer permission names, and collapsed diagnostics.
+- Bump Broker protocol capabilities to v4 for explicit full access and unlimited turns.
+
 ## 0.18.4
 
 - Recover exact Codex turn completion with `thread/read` polling when a shared App Server websocket notification is missed, so the remote queue advances promptly after the real turn finishes.

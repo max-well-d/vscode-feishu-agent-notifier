@@ -78,6 +78,23 @@ export function isCrossOriginDuplicate(
   return Boolean(previousOrigin && currentOrigin && previousOrigin !== currentOrigin);
 }
 
+export function shouldSuppressCrossOriginDuplicate(
+  previous: Pick<AgentEvent, "origin" | "status">,
+  current: Pick<AgentEvent, "origin" | "status">
+): boolean {
+  if (!isCrossOriginDuplicate(previous.origin, current.origin)) {
+    return false;
+  }
+  // A terminal Hook is authoritative. It must upgrade a previously delivered
+  // realtime/transcript message instead of being discarded as the same body.
+  if (previous.status === "progress" && current.status !== "progress") {
+    return false;
+  }
+  // Conversely, a late transcript/display event must not downgrade a terminal
+  // notification that has already been delivered.
+  return true;
+}
+
 export function formatEventMessage(event: AgentEvent, includeMetadata: boolean): string {
   if (!includeMetadata) {
     return event.message;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isCrossOriginDuplicate,
+  shouldSuppressCrossOriginDuplicate,
   eventBelongsToWorkspace,
   normalizeAgentEvent,
   projectNameFromCwd,
@@ -97,4 +98,19 @@ test("deduplicates matching bodies only across different capture origins", () =>
   assert.equal(isCrossOriginDuplicate("transcript", "transcript"), false);
   assert.equal(isCrossOriginDuplicate("hook", "hook"), false);
   assert.equal(isCrossOriginDuplicate("display-hook", "display-hook"), false);
+});
+
+test("terminal Hook events upgrade realtime messages instead of being deduplicated", () => {
+  assert.equal(shouldSuppressCrossOriginDuplicate(
+    { origin: "display-hook", status: "progress" },
+    { origin: "hook", status: "completed" }
+  ), false);
+  assert.equal(shouldSuppressCrossOriginDuplicate(
+    { origin: "hook", status: "completed" },
+    { origin: "transcript", status: "progress" }
+  ), true);
+  assert.equal(shouldSuppressCrossOriginDuplicate(
+    { origin: "notify", status: "completed" },
+    { origin: "hook", status: "completed" }
+  ), true);
 });

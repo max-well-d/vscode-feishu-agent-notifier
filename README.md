@@ -80,7 +80,7 @@ npm run desktop:package
 - 可选进程桥接让官方 Codex VS Code、独立 Codex TUI、Claude Code VS Code、独立 Claude Code CLI 与飞书使用相同后端；VS Code 不再是会话所有者，只是客户端之一。
 - 已桥接的 Codex session 会按原 Session ID 直接复用 VS Code 正在连接的共享 App Server，不再执行第二次 `thread/resume`；只有桥接安装前创建的真正外部历史会话才保留精确 turn 安全分支兼容路径。
 - 卡片副标题显示真实 session 名称、短 session ID、项目和时间；`/alias` 设置的本地别名优先显示。
-- 远程回复按会话串行执行，支持超时、取消、重复事件去重和最多 20 条排队保护。
+- 远程回复按会话串行执行，默认持续等待权威完成、失败或手动取消，并保留重复事件去重和最多 20 条排队保护；可选配置有限超时。
 - 远程执行默认关闭；可选择只读规划，或显式继承本机 Agent 权限。用户、群聊和群聊 @ 均有独立白名单策略。
 - 应用机器人模式可按项目名或绝对路径把通知路由到不同群聊。
 - 转发脚本只连接 `127.0.0.1` 上的 VS Code 扩展，不向局域网开放端口。
@@ -99,7 +99,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.18.4.vsix
+code --install-extension .\feishu-agent-notifier-0.19.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。
@@ -220,7 +220,7 @@ Windows 原生启动器带有内容哈希文件名。升级时会生成新文件
 
 Session Broker 仅监听 `127.0.0.1`，使用随机 bearer token，并把普通状态写入 `dataDirectory`。它独立于 Extension Host，因此窗口重载不会停止已托管的 Codex turn；重载期间完成的结果进入本地收件箱，新 Host 连接后才确认和投递。Broker 重启时，遗留的 `running` 只能恢复为“状态未知”，不会伪造仍在执行或已经完成。
 
-Codex 会话接入时会先用 `thread/read` 查询共享 App Server：状态为 `idle` 或 `active` 说明线程已经由同一个服务加载，直接复用且不调用 `thread/resume`；只有状态为 `notLoaded` 的持久化外部线程才执行 `thread/resume`。若旧版/未桥接 App Server 仍持有唯一 writer，远程分支会严格沿用通知中记录的原始工作目录，不会切换到某个子仓库，也不会改变 `planOnly` / `inherit` 权限策略。
+Codex 会话接入时会先用 `thread/read` 查询共享 App Server：状态为 `idle` 或 `active` 说明线程已经由同一个服务加载，直接复用且不调用 `thread/resume`；只有状态为 `notLoaded` 的持久化外部线程才执行 `thread/resume`。若旧版/未桥接 App Server 仍持有唯一 writer，远程分支会严格沿用通知中记录的原始工作目录，不会切换到某个子仓库，也不会改变已选权限策略。
 
 扩展不会终止旧 IDE App Server，也不会强占外部 Codex writer。只有原 ID 接管失败时，才使用卡片保存的 `turnId` 调用 `thread/fork`，创建磁盘持久化、由插件独占的远程分支，并把“源 session + 源 turn → 分支 session”写入私有 JSON 会话索引。以后再次引用原卡片也会回到该分支。分支与原 session 共享工作目录，因此同时运行两个 Agent 仍可能产生文件级冲突；旧卡片没有精确 `turnId` 时会安全失败。
 
@@ -255,7 +255,7 @@ Codex 会话接入时会先用 `thread/read` 查询共享 App Server：状态为
 
 Codex 官方 `Stop` Hook 会直接提供最后一条 assistant 回复。非托管 Hook 首次安装或内容变化后需要在支持该功能的 Codex 中运行 `/hooks` 检查并信任；旧版没有 `/hooks` 时，`notify` 与 transcript 回退仍可工作。安装器只更新带本扩展标记的配置组，不删除其他 Hook；卸载时恢复此前的 `notify`。
 
-`deliveryTiming` 默认是 `realtime`。Claude Code 在版本支持时通过 `MessageDisplay` 接收 assistant 文本分片，按 `message_id`、`index` 和 `final` 在内存中还原为完整消息；旧版直接使用 `~/.claude/projects` transcript。Codex 对启动时已有的全部 session 文件建立位置基线，因此恢复较早创建的会话也能继续读取新消息，但不会补发旧内容。Codex 当前没有稳定的“每条 assistant 文本”Hook，实时过程仍使用 transcript；官方 `Stop` 和 `notify` 负责最终回复兜底。
+`deliveryTiming` 默认是 `realtime`。Claude Code 在版本支持时通过 `MessageDisplay` 接收 assistant 文本分片，按 `message_id`、`index` 和 `final` 在内存中还原为完整消息；旧版直接使用 `~/.claude/projects` transcript。随后到达的 `Stop` / `StopFailure` 是权威终态，即使正文与实时消息相同也会发送完成/失败卡片并建立可引用的完成路由。Codex 对启动时已有的全部 session 文件建立位置基线，因此恢复较早创建的会话也能继续读取新消息，但不会补发旧内容。Codex 当前没有稳定的“每条 assistant 文本”Hook，实时过程仍使用 transcript；官方 `Stop` 和 `notify` 负责最终回复兜底。
 
 多个 VS Code 窗口使用相同端口时，只有一个窗口运行接收器和 transcript watcher。其他同一 Profile 窗口通过带 Token 的健康检查进入待命；所有者退出后，待命窗口会自动竞争接管。不同 Profile 使用不同 Token，如果配置到同一端口，状态中心会明确显示端口冲突。
 
@@ -282,8 +282,8 @@ Codex 官方 `Stop` Hook 会直接提供最后一条 assistant 回复。非托�
 - 不要把 Webhook、App Secret 或扩展私有目录中的 `receiver-token` 提交到代码仓库。
 - 离线队列可能暂存完整回复；对落盘敏感的环境请关闭 `queueWhenOffline`。
 - 本扩展不会修改项目级配置；只在用户明确执行命令后修改用户级配置。
-- 飞书远程回复相当于给白名单用户提供本机 Agent 输入能力。`planOnly` 使用 Codex 只读沙箱和 Claude Code plan 模式；`inherit` 可能修改文件、执行命令并消耗 Agent 配额。自动远程分支继承当前策略，不会提升权限。
-- 远程回复正文通过 Codex App Server JSON-RPC 或 Agent 子进程 stdin 传递，不放入命令行参数；扩展不会自动添加任何 `dangerously-bypass-*` 参数。非 Git 目录兼容仅跳过仓库存在性检查，不会跳过沙箱或审批策略。
+- 飞书远程回复相当于给白名单用户提供本机 Agent 输入能力。`planOnly` 明确只读；`inherit` 不覆盖当前共享会话权限，新会话使用本机 Agent 默认配置；`fullAccess` 明确跳过审批和沙箱，必须额外确认。
+- 远程回复正文通过 Codex App Server JSON-RPC 或 Agent 子进程 stdin 传递，不放入命令行参数。只有显式选择 `fullAccess` 才会为兼容 CLI 添加危险跳过参数；非 Git 目录兼容本身不会跳过沙箱或审批策略。
 - 群聊建议只授予“@机器人消息”权限，并保持 `remoteRequireGroupMention=true`。
 
 完整威胁模型与漏洞报告方式见 [SECURITY.md](SECURITY.md)。

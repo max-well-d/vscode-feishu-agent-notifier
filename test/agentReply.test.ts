@@ -50,6 +50,16 @@ test("builds public resume commands without bypass flags", () => {
   assert.ok(claudeFork.args.includes("--fork-session"));
 });
 
+test("uses explicit full-access flags only for the fullAccess policy", () => {
+  const codexCommand = buildAgentCommand(codex, "fullAccess");
+  assert.ok(codexCommand.args.includes("--dangerously-bypass-approvals-and-sandbox"));
+  const claudeCommand = buildAgentCommand({ ...codex, source: "claude-code" }, "fullAccess");
+  assert.ok(claudeCommand.args.includes("--dangerously-skip-permissions"));
+
+  assert.ok(!buildAgentCommand(codex, "inherit").args.some((arg) => arg.includes("dangerously")));
+  assert.ok(!buildAgentCommand({ ...codex, source: "claude-code" }, "inherit").args.some((arg) => arg.includes("permission")));
+});
+
 test("allows non-Git Codex resume only for an authoritative external session", () => {
   const authoritativeExternal: AgentSession = {
     ...codex,

@@ -179,6 +179,44 @@ test("attaches to an already loaded VS Code thread without resuming a second wri
   client.dispose();
 });
 
+test("inherit leaves the shared thread permission defaults untouched", async () => {
+  const requests: ProtocolMessage[] = [];
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "inherit-test",
+    spawnImpl: fakeAppServer(requests)
+  });
+  const session = await client.startThread("D:\\work\\repo", "repo", "inherit");
+  await client.runTurn(session, "continue", "inherit", new AbortController().signal, 0);
+
+  const threadStart = requests.find((request) => request.method === "thread/start")?.params;
+  const turnStart = requests.find((request) => request.method === "turn/start")?.params;
+  assert.equal(threadStart?.approvalPolicy, undefined);
+  assert.equal(threadStart?.sandbox, undefined);
+  assert.equal(turnStart?.approvalPolicy, undefined);
+  assert.equal(turnStart?.sandboxPolicy, undefined);
+  client.dispose();
+});
+
+test("fullAccess explicitly disables approval and sandbox enforcement", async () => {
+  const requests: ProtocolMessage[] = [];
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "full-access-test",
+    spawnImpl: fakeAppServer(requests)
+  });
+  const session = await client.startThread("D:\\work\\repo", "repo", "fullAccess");
+  await client.runTurn(session, "continue", "fullAccess", new AbortController().signal, 0);
+
+  const threadStart = requests.find((request) => request.method === "thread/start")?.params;
+  const turnStart = requests.find((request) => request.method === "turn/start")?.params;
+  assert.equal(threadStart?.approvalPolicy, "never");
+  assert.equal(threadStart?.sandbox, "danger-full-access");
+  assert.equal(turnStart?.approvalPolicy, "never");
+  assert.deepEqual(turnStart?.sandboxPolicy, { type: "dangerFullAccess" });
+  client.dispose();
+});
+
 test("recovers a completed turn by polling when the websocket completion is missed", async () => {
   const requests: ProtocolMessage[] = [];
   const client = new CodexAppServerClient({

@@ -2,7 +2,7 @@ import { AgentSession, InputOrigin } from "./types";
 import { AgentEvent } from "./types";
 import { HandoffState } from "./handoff";
 
-export const BROKER_PROTOCOL_VERSION = 3 as const;
+export const BROKER_PROTOCOL_VERSION = 4 as const;
 
 export interface BrokerDescriptor {
   protocolVersion: typeof BROKER_PROTOCOL_VERSION;
@@ -19,6 +19,8 @@ export interface BrokerSnapshot {
     sameServerThreadAttach: true;
     exactTurnRecovery: true;
     ownedTurnCancellation: true;
+    explicitFullAccess: true;
+    unlimitedTurns: true;
   };
   state: "starting" | "ready" | "failed";
   codexState: "stopped" | "starting" | "ready" | "failed";
@@ -60,7 +62,7 @@ export interface ClaudeChannelOutbound {
 export interface BrokerTurnRequest {
   session: AgentSession;
   prompt: string;
-  policy: "planOnly" | "inherit";
+  policy: "planOnly" | "inherit" | "fullAccess";
   origin: InputOrigin;
   timeoutMs: number;
 }

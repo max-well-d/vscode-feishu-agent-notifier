@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.18.4",
+  "version": "0.19.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -262,12 +262,14 @@
           "enum": [
             "disabled",
             "planOnly",
-            "inherit"
+            "inherit",
+            "fullAccess"
           ],
           "enumDescriptions": [
             "关闭飞书入站消息和远程 Agent 回复。",
             "允许回复，但 Codex 使用只读沙箱、Claude Code 使用 plan 权限模式。",
-            "允许回复并继承本机 Agent 配置。远程指令可能修改文件或执行命令。"
+            "不覆盖当前共享会话的审批和沙箱；新会话使用本机 Agent 默认配置。",
+            "明确关闭审批和沙箱。白名单用户可以执行任意本机操作。"
           ],
           "default": "disabled",
           "scope": "machine",
@@ -307,12 +309,12 @@
         },
         "feishuAgentNotifier.remoteReplyTimeoutMinutes": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "maximum": 240,
-          "default": 30,
+          "default": 0,
           "scope": "machine",
           "order": 28,
-          "description": "单条飞书远程 Agent 回复的最长运行分钟数。"
+          "description": "单条远程 Agent 回复的最长运行分钟数；0 表示持续等待权威完成、失败或手动取消。"
         },
         "feishuAgentNotifier.remoteActiveWaitMinutes": {
           "type": "integer",
