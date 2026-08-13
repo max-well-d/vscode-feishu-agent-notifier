@@ -10,6 +10,7 @@ import { eventDeduplicationKey, isCrossOriginDuplicate } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { FeishuInboundClient } from "./feishuInbound";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
+import { deployHookRuntime, HookRuntimeInstallation } from "./hookRuntime";
 import { HookEventNormalizer } from "./hookEventNormalizer";
 import {
   formatLocalNotification,
@@ -91,6 +92,7 @@ let brokerApprovalTimer: NodeJS.Timeout | undefined;
 let brokerCompletionDrainRunning = false;
 let desktopControlPlaneActive = false;
 let desktopControlPlaneTimer: NodeJS.Timeout | undefined;
+let installedHookRuntime: HookRuntimeInstallation | undefined;
 const announcedApprovals = new Set<string>();
 let statusSnapshot: StatusSnapshot = {
   initializing: true,
@@ -1128,14 +1130,14 @@ async function sendLocalTestNotification(): Promise<void> {
 
 async function installHookFiles(context: vscode.ExtensionContext): Promise<void> {
   try {
-    await deployHelper(context);
+    const runtime = await deployHelper(context);
     const token = await getOrCreateHookToken(context);
     await writeHookTokenFile(context, token);
-    const helperPath = helperDestination(context);
     const tokenFilePath = hookTokenDestination(context);
     const port = getSetting<number>("port", 37561);
     const result = await installHooks({
-      helperPath,
+      helperPath: runtime.helperPath,
+      commandPath: runtime.commandPath,
       tokenFilePath,
       spoolDirectory: pendingDirectory(),
       port
@@ -1487,10 +1489,12 @@ async function secretOrSetting(
   return (secret ?? getSetting<string>(settingKey, "")).trim();
 }
 
-async function deployHelper(context: vscode.ExtensionContext): Promise<void> {
-  const destination = helperDestination(context);
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  await fs.copyFile(context.asAbsolutePath(path.join("scripts", "agent-hook.cjs")), destination);
+async function deployHelper(context: vscode.ExtensionContext): Promise<HookRuntimeInstallation> {
+  installedHookRuntime = await deployHookRuntime({
+    dataDirectory: extensionStoragePath,
+    helperSourcePath: context.asAbsolutePath(path.join("scripts", "agent-hook.cjs")),
+    launcherSourcePath: context.asAbsolutePath(path.join("assets", "windows", "HookLauncher.cs"))
+  });
   const disabledMarker = path.join(extensionStoragePath, "offline-queue-disabled");
   await fs.mkdir(extensionStoragePath, { recursive: true });
   if (getSetting<boolean>("queueWhenOffline", true)) {
@@ -1498,6 +1502,7 @@ async function deployHelper(context: vscode.ExtensionContext): Promise<void> {
   } else {
     await fs.writeFile(disabledMarker, "disabled\n", "utf8");
   }
+  return installedHookRuntime;
 }
 
 async function refreshInstalledHookPaths(context: vscode.ExtensionContext): Promise<void> {
@@ -1512,8 +1517,10 @@ async function refreshInstalledHookPaths(context: vscode.ExtensionContext): Prom
       && !inspection.claudeMessageDisplayInstalled) {
       return;
     }
+    const runtime = installedHookRuntime ?? await deployHelper(context);
     await installHooks({
-      helperPath: helperDestination(context),
+      helperPath: runtime.helperPath,
+      commandPath: runtime.commandPath,
       tokenFilePath: hookTokenDestination(context),
       spoolDirectory: pendingDirectory(),
       port: getSetting<number>("port", 37561)
@@ -1521,10 +1528,6 @@ async function refreshInstalledHookPaths(context: vscode.ExtensionContext): Prom
   } catch (error) {
     output?.warn(`更新 Hook 数据目录失败：${(error as Error).message}`);
   }
-}
-
-function helperDestination(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, "feishu-agent-notifier-hook.cjs");
 }
 
 function hookTokenDestination(context: vscode.ExtensionContext): string {

@@ -95,6 +95,20 @@ test("merges Claude completion and MessageDisplay hooks idempotently", () => {
   );
 });
 
+test("uses a native no-window launcher without appending the helper path", () => {
+  const commandPath = "H:\\Agent Link\\hook-runtime\\agent-link-hook.exe";
+  const nativeOptions = { ...options, commandPath };
+  const codex = mergeCodexNotify("", nativeOptions);
+  assert.match(codex.text, /agent-link-hook\.exe/);
+  assert.doesNotMatch(codex.text, /feishu-agent-notifier-hook\.cjs/);
+
+  const claude: Record<string, any> = { hooks: {} };
+  mergeClaudeHooks(claude, nativeOptions);
+  assert.equal(claude.hooks.Stop[0].hooks[0].command, commandPath);
+  assert.equal(claude.hooks.Stop[0].hooks[0].args[0], "--port");
+  assert.ok(claude.hooks.Stop[0].hooks[0].args.includes(NOTIFIER_MARKER));
+});
+
 test("removes only notifier hook groups", () => {
   const document: Record<string, any> = { hooks: {} };
   mergeClaudeHooks(document, options);

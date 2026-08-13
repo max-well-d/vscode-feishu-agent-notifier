@@ -11,3 +11,7 @@ await fs.copyFile(path.join(root, "scripts", "agent-hook.cjs"), path.join(root, 
 const assets = path.join(root, "desktop", "dist", "assets");
 await fs.mkdir(assets, { recursive: true });
 await fs.copyFile(path.join(root, "desktop", "build", "icon.png"), path.join(assets, "icon.png"));
+const windowsAssets = path.join(assets, "windows");
+await fs.mkdir(windowsAssets, { recursive: true });
+await fs.copyFile(path.join(root, "assets", "windows", "HookLauncher.cs"), path.join(windowsAssets, "HookLauncher.cs"));
+await fs.copyFile(path.join(root, "assets", "windows", "HiddenConsoleHost.cs"), path.join(windowsAssets, "HiddenConsoleHost.cs"));

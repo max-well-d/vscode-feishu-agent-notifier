@@ -6,6 +6,7 @@ export const NOTIFIER_MARKER = "feishu-agent-notifier-v1";
 
 export interface InstallHooksOptions {
   helperPath: string;
+  commandPath?: string;
   tokenFilePath: string;
   spoolDirectory?: string;
   port: number;
@@ -137,8 +138,7 @@ export async function inspectHooks(homeDirectory?: string): Promise<HookInspecti
 
 export function mergeCodexNotify(configText: string, options: InstallHooksOptions): CodexNotifyMergeResult {
   const command = [
-    "node",
-    options.helperPath,
+    ...hookCommand(options),
     "--port", String(options.port),
     "--token-file", options.tokenFilePath,
     "--source", "codex",
@@ -206,8 +206,9 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
   for (const eventName of ["Stop", "StopFailure", "MessageDisplay"]) {
     const groups = ensureEventGroups(hooks, eventName);
     removeMatchingGroups(groups);
+    const command = hookCommand(options);
     const args = [
-      options.helperPath,
+      ...command.slice(1),
       "--port", String(options.port),
       "--token-file", options.tokenFilePath,
       "--source", "claude-code",
@@ -222,7 +223,7 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
     groups.push({
       hooks: [{
         type: "command",
-        command: "node",
+        command: command[0],
         args,
         async: true,
         timeout: 10
@@ -235,8 +236,7 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
 function buildCodexHookCommand(options: InstallHooksOptions, windows: boolean): string {
   const quote = windows ? quoteWindowsArgument : quotePosixArgument;
   const command = [
-    "node",
-    quote(options.helperPath),
+    ...hookCommand(options).map(quote),
     "--port", String(options.port),
     "--token-file", quote(options.tokenFilePath),
     "--source", "codex",
@@ -246,6 +246,10 @@ function buildCodexHookCommand(options: InstallHooksOptions, windows: boolean): 
     command.push("--spool", quote(options.spoolDirectory));
   }
   return command.join(" ");
+}
+
+function hookCommand(options: InstallHooksOptions): string[] {
+  return options.commandPath ? [options.commandPath] : ["node", options.helperPath];
 }
 
 function quotePosixArgument(value: string): string {

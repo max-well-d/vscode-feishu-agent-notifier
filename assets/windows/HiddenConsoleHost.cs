@@ -15,6 +15,13 @@ public static class HiddenConsoleHost
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint TH32CS_SNAPPROCESS = 0x00000002;
+    private const uint EVENT_OBJECT_SHOW = 0x8002;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+    private const uint WM_QUIT = 0x0012;
+    private const int OBJID_WINDOW = 0;
+    private static int legacyRootPid;
+    private static WinEventCallback legacyWindowCallback;
 
     public static int Main(string[] args)
     {
@@ -76,25 +83,75 @@ public static class HiddenConsoleHost
     private static int HideLegacyTree(int rootPid)
     {
         bool ownsMutex;
-        using (Mutex mutex = new Mutex(true, "Local\\FeishuAgentNotifier.HiddenTree." + rootPid, out ownsMutex))
+        using (Mutex mutex = new Mutex(true, "Local\\FeishuAgentNotifier.HiddenTreeV2." + rootPid, out ownsMutex))
         {
             if (!ownsMutex)
                 return 0;
-            while (ProcessExists(rootPid))
+            legacyRootPid = rootPid;
+            HideCurrentTree(rootPid);
+            legacyWindowCallback = OnLegacyWindowShown;
+            IntPtr hook = SetWinEventHook(
+                EVENT_OBJECT_SHOW,
+                EVENT_OBJECT_SHOW,
+                IntPtr.Zero,
+                legacyWindowCallback,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+            );
+            uint threadId = GetCurrentThreadId();
+            Thread watcher = new Thread(delegate()
             {
-                HashSet<uint> tree = ReadProcessTree((uint)rootPid);
-                EnumWindows(delegate(IntPtr window, IntPtr data)
+                while (ProcessExists(rootPid)) Thread.Sleep(100);
+                PostThreadMessage(threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+            });
+            watcher.IsBackground = true;
+            watcher.Start();
+            try
+            {
+                MSG message;
+                while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0)
                 {
-                    uint pid;
-                    GetWindowThreadProcessId(window, out pid);
-                    if (tree.Contains(pid) && IsWindowVisible(window))
-                        ShowWindow(window, SW_HIDE);
-                    return true;
-                }, IntPtr.Zero);
-                Thread.Sleep(250);
+                    TranslateMessage(ref message);
+                    DispatchMessage(ref message);
+                }
+            }
+            finally
+            {
+                if (hook != IntPtr.Zero) UnhookWinEvent(hook);
             }
         }
         return 0;
+    }
+
+    private static void OnLegacyWindowShown(
+        IntPtr hook,
+        uint eventType,
+        IntPtr window,
+        int objectId,
+        int childId,
+        uint eventThread,
+        uint eventTime)
+    {
+        if (window == IntPtr.Zero || objectId != OBJID_WINDOW || !IsWindowVisible(window))
+            return;
+        uint pid;
+        GetWindowThreadProcessId(window, out pid);
+        if (ReadProcessTree((uint)legacyRootPid).Contains(pid))
+            ShowWindow(window, SW_HIDE);
+    }
+
+    private static void HideCurrentTree(int rootPid)
+    {
+        HashSet<uint> tree = ReadProcessTree((uint)rootPid);
+        EnumWindows(delegate(IntPtr window, IntPtr data)
+        {
+            uint pid;
+            GetWindowThreadProcessId(window, out pid);
+            if (tree.Contains(pid) && IsWindowVisible(window))
+                ShowWindow(window, SW_HIDE);
+            return true;
+        }, IntPtr.Zero);
     }
 
     private static bool ProcessExists(int pid)
@@ -302,6 +359,26 @@ public static class HiddenConsoleHost
     }
 
     private delegate bool EnumWindowsCallback(IntPtr window, IntPtr data);
+    private delegate void WinEventCallback(IntPtr hook, uint eventType, IntPtr window,
+        int objectId, int childId, uint eventThread, uint eventTime);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int x;
+        public int y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public UIntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcess(string applicationName, StringBuilder commandLine,
@@ -354,4 +431,26 @@ public static class HiddenConsoleHost
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr window, int command);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module,
+        WinEventCallback callback, uint processId, uint threadId, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr hook);
+
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out MSG message, IntPtr window, uint minimum, uint maximum);
+
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG message);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref MSG message);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostThreadMessage(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 }

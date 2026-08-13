@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.2
+
+- Windows Agent Hooks 改为通过 GUI 子系统的原生启动器静默执行，避免每条 Codex/Claude Code 消息触发控制台或 PowerShell 窗口闪烁。
+- Hook Helper 改为部署到自定义数据目录中的内容寻址路径，不再引用 Electron 便携版的临时解压目录。
+- 旧版共享 Codex 服务的窗口兼容监视器改为监听 Windows 窗口显示事件，不再以 250ms 轮询造成短暂闪现；新服务仍从创建时隐藏整个进程树。
+- Agent Link 和兼容 VS Code 扩展会在启动时自动修复已安装 Hook 的运行路径。
+
 ## 0.18.1
 
 - 修复 Broker 状态更新导致 Channel 与系统设置表单被反复重置的问题；控件聚焦期间不再重建页面，未保存草稿会跨状态刷新保留。

@@ -19,6 +19,7 @@ import { SessionRegistry } from "../sessionRegistry";
 import { installHooks, inspectHooks } from "../hookInstaller";
 import { LocalHookServer } from "../server";
 import { HookEventNormalizer } from "../hookEventNormalizer";
+import { deployHookRuntime, deployLegacyWindowMonitor, HookRuntimeInstallation } from "../hookRuntime";
 import { CodexTranscriptWatcher } from "../codexTranscriptWatcher";
 import { ClaudeTranscriptWatcher } from "../claudeTranscriptWatcher";
 import { eventDeduplicationKey, isCrossOriginDuplicate } from "../event";
@@ -73,6 +74,7 @@ const recentEvents = new Map<string, number>();
 const recentBodies = new Map<string, { at: number; origin: import("../types").AgentEvent["origin"] }>();
 let dataDirectory = "";
 let quitting = false;
+let installedHookRuntime: HookRuntimeInstallation | undefined;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -91,11 +93,16 @@ async function boot(): Promise<void> {
   }
   dataDirectory = await resolveDataDirectory();
   await fs.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+  await deployLegacyWindowMonitor(
+    dataDirectory,
+    path.join(__dirname, "assets", "windows", "HiddenConsoleHost.cs")
+  );
   settings = await loadDesktopSettings();
   createRuntime();
   await loadExternalChannels();
   await loadChannels();
   await startHookReceiver();
+  await refreshInstalledHookRuntime();
   await startTranscriptWatchers();
   await writeDesktopDescriptor();
   createWindow();
@@ -460,8 +467,10 @@ function registerIpc(): void {
     return buildSnapshot();
   });
   ipcMain.handle("hooks:install", async () => {
+    const runtime = await prepareHookRuntime();
     const result = await installHooks({
-      helperPath: path.join(__dirname, "agent-hook.cjs"),
+      helperPath: runtime.helperPath,
+      commandPath: runtime.commandPath,
       tokenFilePath: path.join(dataDirectory, "desktop-hook-token"),
       spoolDirectory: path.join(dataDirectory, "pending-events"),
       port: settings.receiverPort
@@ -470,6 +479,34 @@ function registerIpc(): void {
     return inspectHooks();
   });
   ipcMain.handle("hooks:inspect", () => inspectHooks());
+}
+
+async function prepareHookRuntime(): Promise<HookRuntimeInstallation> {
+  installedHookRuntime = await deployHookRuntime({
+    dataDirectory,
+    helperSourcePath: path.join(__dirname, "agent-hook.cjs"),
+    launcherSourcePath: path.join(__dirname, "assets", "windows", "HookLauncher.cs")
+  });
+  return installedHookRuntime;
+}
+
+async function refreshInstalledHookRuntime(): Promise<void> {
+  const inspection = await inspectHooks();
+  if (!inspection.codexInstalled
+    && !inspection.claudeStopInstalled
+    && !inspection.claudeStopFailureInstalled
+    && !inspection.claudeMessageDisplayInstalled) {
+    return;
+  }
+  const runtime = installedHookRuntime ?? await prepareHookRuntime();
+  const result = await installHooks({
+    helperPath: runtime.helperPath,
+    commandPath: runtime.commandPath,
+    tokenFilePath: path.join(dataDirectory, "desktop-hook-token"),
+    spoolDirectory: path.join(dataDirectory, "pending-events"),
+    port: settings.receiverPort
+  });
+  log("info", `Agent Hooks 已切换到无窗口运行时：Codex=${result.codexChanged} Claude=${result.claudeChanged}`);
 }
 
 function editableChannelConfiguration(id: string): { configuration: ChannelConfiguration; secretConfigured: string[] } {
