@@ -1,0 +1,39 @@
+{
+  "name": "agent-link",
+  "productName": "Agent Link",
+  "version": "0.18.0",
+  "description": "Local session middleware for Codex, Claude Code and pluggable messaging channels.",
+  "author": "max-well-d",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "build": {
+    "electronVersion": "43.4.0",
+    "appId": "io.github.max-well-d.agent-link",
+    "productName": "Agent Link",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "Agent-Link-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Agent-Link-Portable-${version}-${arch}.${ext}"
+    }
+  }
+}

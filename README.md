@@ -1,8 +1,54 @@
-# Feishu Agent Notifier
+# Agent Link
 
-一个开源 VS Code 开发扩展：实时把 Codex 或 Claude Code 主 Agent 的每条 assistant 文本消息发送到指定飞书目标，也可通过飞书安全回复、恢复对应的本地 Agent 会话。
+一个独立运行的本地 Agent 中间件：统一连接原版 Codex、Claude Code、本地 CLI 与可插拔消息 Channel。它提供类似 CC Switch 的独立窗口和托盘，但管理的是会话、路由、权限、接入和远程通道，不复制 Codex/Claude Code 的聊天 UI。
 
-## 特性
+飞书不再是系统边界。它是内置的 `Channel Adapter`，可以独立启停；Telegram、企业微信、Slack、Webhook 或自建移动端可以通过同一套 Channel API 加入。
+
+## 当前架构
+
+```text
+Codex UI/CLI ─┐
+              ├─ Agent Link Session Broker ─ Event / Session Bus ─┬─ Feishu Adapter
+Claude UI/CLI ┘                                                    ├─ third-party Channel
+                                                                   └─ local desktop UI
+```
+
+- `Agent Link.exe` 独立于 VS Code 运行，提供桌面控制面、系统托盘、Hook Receiver 和 Session Broker 客户端。
+- 官方 Codex / Claude Code 继续显示历史、diff、审批和模型能力；Agent Link 不维护缩水版对话面板。
+- Session ID、引用消息和目标会话由本地持久化索引精确绑定。Channel 只负责收发，不拥有 Agent 会话。
+- 普通配置保存在可自定义数据目录；Channel 密钥通过 Electron `safeStorage` 使用操作系统安全存储加密，不写入普通 JSON。
+- Renderer 开启 sandbox 和 context isolation，不启用 Node integration，只加载本地静态资源。
+- 桌面端默认从现有 `feishuAgentNotifier.dataDirectory` 迁移数据位置；如果不存在才使用自己的数据目录。
+- 外部 Channel 插件放在 `<数据目录>/channels/<插件>/`，按 [Channel API](docs/CHANNEL_API.md) 加载。
+
+## 桌面端开发与打包
+
+```powershell
+npm install
+npm test
+npm run desktop
+npm run desktop:package
+```
+
+生成：
+
+- `desktop/release/Agent-Link-Setup-<version>-x64.exe`
+- `desktop/release/Agent-Link-Portable-<version>-x64.exe`
+
+首次打开后：
+
+1. 在“系统”设置远程执行策略与新会话默认工作目录。
+2. 点击“安装 / 更新 Agent 接入”，让 Codex 和 Claude Code Hook 指向桌面 Receiver。
+3. 在“Channels”打开飞书，填写 Webhook 或 App 配置；双向模式还需填写用户/群聊白名单。
+4. 发送测试消息，再从飞书引用 Agent 通知验证远程回复。
+
+详细设计见 [架构文档](docs/ARCHITECTURE.md)。
+
+## 兼容 VS Code 扩展
+
+仓库仍保留原 `Feishu Agent Notifier` VS Code 扩展，作为迁移期薄接入层和旧配置兼容入口。新功能应进入 Agent Link Core 或 Channel Adapter，不再继续把会话生命周期绑在 Extension Host。
+
+### 扩展既有能力
 
 - 默认实时逐条转发：Codex 的每条 `commentary` / `final_answer`，以及 Claude Code 官方 `MessageDisplay` Hook 提供的每条 assistant 文本消息。
 - 实时模式只发送主 Agent 的 assistant 可见文本，不发送 thinking、工具参数、工具输出、用户输入或 Claude Code sidechain/subagent 内部消息。
@@ -53,7 +99,7 @@ npm install
 npm test
 npm run test:integration
 npm run package
-code --install-extension .\feishu-agent-notifier-0.17.1.vsix
+code --install-extension .\feishu-agent-notifier-0.18.0.vsix
 ```
 
 开发时也可以在 VS Code 中打开本目录，按 `F5` 启动 Extension Development Host。

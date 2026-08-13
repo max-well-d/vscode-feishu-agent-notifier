@@ -57,7 +57,13 @@ export function buildFeishuCard(
 
 function sessionIdElement(event: AgentEvent): Record<string, unknown> {
   const source = event.source === "claude-code" ? "Claude Code" : event.source === "codex" ? "Codex" : "Agent";
-  const origin = event.inputOrigin === "feishu" ? "飞书远程" : event.inputOrigin === "local" ? "VS Code 本地" : "未标记";
+  const origin = event.inputOrigin === "local"
+    ? "本机客户端"
+    : event.inputOrigin === "feishu"
+      ? "飞书远程"
+      : event.inputOrigin?.startsWith("channel:")
+        ? `远程 ${event.inputOrigin.slice(8)}`
+        : "未标记";
   return {
     tag: "markdown",
     content: `**${source} Session ID：** \`${escapeInlineCode(event.sessionId || "未知会话")}\`\n**输入来源：** ${origin}`

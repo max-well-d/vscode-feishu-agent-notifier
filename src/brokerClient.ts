@@ -7,7 +7,7 @@ import { BrokerCompletion, BrokerDescriptor, BrokerSnapshot, BrokerTurnResult } 
 import { ClaudeChannelEvent, ClaudeChannelOutbound } from "./brokerProtocol";
 import { AppServerState } from "./codexAppServer";
 import { CodexThreadMetadata } from "./codexAppServer";
-import { AgentSession, RemoteExecutionPolicy } from "./types";
+import { AgentSession, InputOrigin, RemoteExecutionPolicy } from "./types";
 
 export interface SessionBrokerClientOptions {
   dataDirectory: string;
@@ -101,7 +101,7 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
     policy: RemoteExecutionPolicy,
     signal: AbortSignal,
     timeoutMs: number,
-    origin: "local" | "feishu" = "feishu"
+    origin: InputOrigin = "feishu"
   ): Promise<AgentReplyResult> {
     const onAbort = (): void => {
       void this.interruptSession(session.sessionId).catch(() => false);
@@ -199,7 +199,7 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
   public async resolveApproval(
     approvalId: string,
     decision: "accept" | "decline",
-    origin: "local" | "feishu"
+    origin: InputOrigin
   ): Promise<void> {
     await this.call("POST", `/approvals/${encodeURIComponent(approvalId)}`, { decision, origin });
   }

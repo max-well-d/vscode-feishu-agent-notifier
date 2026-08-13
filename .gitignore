@@ -1,6 +1,8 @@
 node_modules/
 out/
 dist/
+desktop/dist/
+desktop/release/
 .vscode-test/
 *.vsix
 *.log

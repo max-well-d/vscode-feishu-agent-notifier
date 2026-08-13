@@ -165,8 +165,8 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
         return;
       }
       let state = handoffs.get(session.sessionId) ?? initialHandoffState(session.sessionId);
-      if (body.origin === "feishu") {
-        const decision = requestRemoteTurn(state);
+      if (body.origin !== "local") {
+        const decision = requestRemoteTurn(state, new Date(), body.origin);
         state = decision.state;
         handoffs.set(session.sessionId, state);
         await persistHandoffs(statePath, handoffs);

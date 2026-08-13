@@ -117,18 +117,18 @@ export class ReplyRouter {
         const prompt = rest.join(" ").trim();
         const workspace = this.options.defaultWorkspace();
         if (!workspace || !prompt || !["codex", "claude", "claude-code", "cc"].includes(sourceName ?? "")) {
-          await this.options.reply(message, "用法：/new <codex|cc> <内容>。需要先在 VS Code 打开目标工作区。 ");
+          await this.options.reply(message, "用法：/new <codex|cc> <内容>。请先在 Agent Link 系统设置中配置默认工作目录。 ");
           return;
         }
         const policy = this.options.policy();
         if (policy === "disabled") {
-          await this.options.reply(message, "飞书远程回复已禁用。请在 VS Code 设置中启用后重试。 ");
+          await this.options.reply(message, "远程回复已禁用。请在 Agent Link 系统策略中启用后重试。 ");
           return;
         }
         let session: AgentSession;
         if (sourceName === "codex") {
           if (!this.options.createManagedCodexSession) {
-            await this.options.reply(message, "Codex App Server 托管执行器不可用。请运行插件自检。 ");
+            await this.options.reply(message, "Codex App Server 托管执行器不可用。请在 Agent Link 中刷新 Broker 状态。 ");
             return;
           }
           try {
@@ -187,7 +187,7 @@ export class ReplyRouter {
           || session.ownership !== "managed"
           || session.managedBackend !== "codex-app-server"
           || !this.options.steerManagedCodex) {
-          await this.options.reply(message, "/steer 仅支持由飞书 /new 创建且正在运行的托管 Codex 会话。 ");
+          await this.options.reply(message, "/steer 仅支持由远程 Channel /new 创建且正在运行的托管 Codex 会话。 ");
           return;
         }
         try {
@@ -215,7 +215,7 @@ export class ReplyRouter {
         }
         try {
           await this.options.resolveApproval(approvalId, command.toLocaleLowerCase() === "/approve" ? "accept" : "decline");
-          await this.options.reply(message, `审批 ${approvalId} 已${command.toLocaleLowerCase() === "/approve" ? "允许" : "拒绝"}（飞书先响应）。`);
+          await this.options.reply(message, `审批 ${approvalId} 已${command.toLocaleLowerCase() === "/approve" ? "允许" : "拒绝"}（远程 Channel 先响应）。`);
         } catch (error) {
           await this.options.reply(message, `审批未生效：${(error as Error).message}`);
         }
@@ -234,7 +234,7 @@ export class ReplyRouter {
   ): Promise<void> {
     const policy = this.options.policy();
     if (policy === "disabled") {
-      await this.options.reply(message, "飞书远程回复已禁用。请在 VS Code 设置中启用后重试。 ");
+      await this.options.reply(message, "远程回复已禁用。请在 Agent Link 系统策略中启用后重试。 ");
       return;
     }
     if (!session.cwd) {
@@ -279,7 +279,7 @@ export class ReplyRouter {
     const replyId = await this.options.reply(message,
       `${waiting ? "已排队" : "已接收"}：${formatSession(session)}\n`
       + `策略：${policy === "planOnly" ? "只读规划" : "继承本机权限"}`
-      + `\n会话：${ownership === "managed" ? "本机/飞书共享" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : branchingCodex ? "优先保持原 Codex Session ID；writer 冲突时创建安全分支" : "外部完成后续写"}`
+      + `\n会话：${ownership === "managed" ? "本机/远程共享" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : branchingCodex ? "优先保持原 Codex Session ID；writer 冲突时创建安全分支" : "外部完成后续写"}`
       + `${handoff ? `\n交接：${handoff}${handoff === "本地优先" ? "（等待本地输入或 turn 结束）" : ""}` : ""}`
       + `${waiting ? `\n队列位置：${result.position}` : ""}`
     );
@@ -338,7 +338,7 @@ function formatSession(session: AgentSession): string {
 function remoteSessionName(prompt: string, project: string): string {
   const firstLine = prompt.split(/\r?\n/, 1)[0].replace(/\s+/g, " ").trim();
   const content = Array.from(firstLine).slice(0, 48).join("");
-  return content ? `飞书 · ${content}` : `飞书 · ${project}`;
+  return content ? `远程 · ${content}` : `远程 · ${project}`;
 }
 
 function formatTime(value: string): string {
@@ -348,16 +348,16 @@ function formatTime(value: string): string {
 
 function helpText(): string {
   return [
-    "飞书远程 Agent 回复：",
+    "Agent Link 远程回复：",
     "- 引用一条 Agent 通知并发送文本：继续对应会话",
     "- /sessions：列出最近本地会话",
     "- /use <目标>：选择当前聊天使用的会话",
     "- /send <目标> <内容>：直接发送到指定会话",
-    "- /new <codex|cc> <内容>：在当前 VS Code 工作区创建新会话",
+    "- /new <codex|cc> <内容>：在 Agent Link 默认工作目录创建新会话",
     "- /steer <内容>：追加到正在运行的托管 Codex turn",
     "- /alias <名称>：给当前会话设置别名",
     "- /status：查看连接和队列",
-    "- /cancel：取消当前飞书聊天提交的任务",
+    "- /cancel：取消当前 Channel 会话提交的任务",
     "- /approve <审批ID>：允许待处理权限请求（与本地先答者生效）",
     "- /deny <审批ID>：拒绝待处理权限请求",
     "- /help：显示此帮助"

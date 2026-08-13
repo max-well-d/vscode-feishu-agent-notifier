@@ -5,6 +5,7 @@ export type DeliveryTiming = "realtime" | "completion";
 export type RemoteExecutionPolicy = "disabled" | "planOnly" | "inherit";
 export type AgentSessionOwnership = "external" | "managed";
 export type SessionCompletionEvidence = "authoritative" | "discovered";
+export type InputOrigin = "local" | "feishu" | `channel:${string}`;
 
 export interface AgentEvent {
   source: "codex" | "claude-code" | "unknown";
@@ -17,7 +18,7 @@ export interface AgentEvent {
   cwd: string;
   project: string;
   sessionName?: string;
-  inputOrigin?: "local" | "feishu";
+  inputOrigin?: InputOrigin;
   channelId?: string;
   managedBackend?: "codex-app-server" | "claude-channel";
   message: string;

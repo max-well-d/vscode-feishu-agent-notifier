@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.17.1",
+  "version": "0.18.0",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
@@ -481,6 +481,9 @@
   "scripts": {
     "compile": "tsc -p .",
     "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node22 --external:vscode --external:./larkSdk --outfile=dist/extension.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/larkSdk.js && esbuild src/brokerEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/broker.js && esbuild src/claudeChannelEntry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/claude-channel.js && esbuild src/agentBridge.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/agent-bridge.js",
+    "bundle:desktop": "npm run compile && esbuild src/desktop/main.ts --bundle --platform=node --format=cjs --target=node24 --external:electron --external:./larkSdk --outfile=desktop/dist/main.js && esbuild src/desktop/preload.ts --bundle --platform=node --format=cjs --target=node24 --external:electron --outfile=desktop/dist/preload.js && esbuild src/desktop/renderer/app.ts --bundle --platform=browser --format=iife --target=chrome150 --outfile=desktop/dist/renderer/app.js && esbuild src/brokerEntry.ts --bundle --platform=node --format=cjs --target=node24 --outfile=desktop/dist/broker.js && esbuild src/larkSdk.ts --bundle --platform=node --format=cjs --target=node24 --outfile=desktop/dist/larkSdk.js && node scripts/build-desktop-assets.mjs",
+    "desktop": "npm run bundle:desktop && electron desktop",
+    "desktop:package": "npm run bundle:desktop && electron-builder --projectDir desktop --win nsis portable",
     "vscode:prepublish": "npm run compile && npm run bundle",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test out/test/*.test.js",
@@ -497,6 +500,8 @@
     "@types/vscode": "^1.106.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.6.0",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0"
   }

@@ -1,4 +1,4 @@
-import { AgentSession } from "./types";
+import { AgentSession, InputOrigin } from "./types";
 import { AgentEvent } from "./types";
 import { HandoffState } from "./handoff";
 
@@ -52,7 +52,7 @@ export interface BrokerTurnRequest {
   session: AgentSession;
   prompt: string;
   policy: "planOnly" | "inherit";
-  origin: "local" | "feishu";
+  origin: InputOrigin;
   timeoutMs: number;
 }
 

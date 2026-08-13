@@ -89,6 +89,8 @@ let statusRefreshId = 0;
 let configurationWizardSaving = false;
 let brokerApprovalTimer: NodeJS.Timeout | undefined;
 let brokerCompletionDrainRunning = false;
+let desktopControlPlaneActive = false;
+let desktopControlPlaneTimer: NodeJS.Timeout | undefined;
 const announcedApprovals = new Set<string>();
 let statusSnapshot: StatusSnapshot = {
   initializing: true,
@@ -174,13 +176,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await deployHelper(context);
   await refreshInstalledHookPaths(context);
   await restartServer(context);
-  startBrokerApprovalMonitor(context);
+  startDesktopControlPlaneMonitor(context);
+  if (!desktopControlPlaneActive) {
+    startBrokerApprovalMonitor(context);
+  }
 }
 
 export async function deactivate(): Promise<void> {
   if (brokerApprovalTimer) {
     clearInterval(brokerApprovalTimer);
     brokerApprovalTimer = undefined;
+  }
+  if (desktopControlPlaneTimer) {
+    clearInterval(desktopControlPlaneTimer);
+    desktopControlPlaneTimer = undefined;
   }
   stopReceiverTakeoverMonitor();
   // Do not cancel Broker-owned turns during Extension Host reload. The new host
@@ -219,6 +228,13 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   claudeRealtimeSource = undefined;
   await hookServer?.stop();
   hookServer = undefined;
+  desktopControlPlaneActive = await agentLinkDesktopIsActive();
+  if (desktopControlPlaneActive) {
+    receiverStandbyPort = await agentLinkDesktopPort();
+    output?.info("Agent Link 桌面控制面在线；VS Code 扩展已进入薄客户端待命，不再重复连接 Channel 或监听 transcript。");
+    await refreshStatusBar(context);
+    return;
+  }
   if (!getSetting<boolean>("enabled", true)) {
     output?.info("通知接收器已禁用。 ");
     await refreshStatusBar(context);
@@ -316,6 +332,57 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
     output?.warn(message);
   }
   await refreshStatusBar(context);
+}
+
+function startDesktopControlPlaneMonitor(context: vscode.ExtensionContext): void {
+  if (desktopControlPlaneTimer) clearInterval(desktopControlPlaneTimer);
+  desktopControlPlaneTimer = setInterval(() => {
+    void agentLinkDesktopIsActive().then(async (active) => {
+      if (active === desktopControlPlaneActive) return;
+      desktopControlPlaneActive = active;
+      if (brokerApprovalTimer) {
+        clearInterval(brokerApprovalTimer);
+        brokerApprovalTimer = undefined;
+      }
+      await restartServer(context);
+      if (!active) startBrokerApprovalMonitor(context);
+    }).catch((error) => output?.debug(`检查 Agent Link 桌面状态失败：${(error as Error).message}`));
+  }, 5_000);
+  desktopControlPlaneTimer.unref();
+}
+
+async function agentLinkDesktopIsActive(): Promise<boolean> {
+  const descriptor = await readAgentLinkDescriptor();
+  if (!descriptor?.pid || !descriptor.receiverPort) return false;
+  try {
+    process.kill(descriptor.pid, 0);
+    const token = (await fs.readFile(path.join(extensionStoragePath, "desktop-hook-token"), "utf8")).trim();
+    if (!token) return false;
+    const response = await fetch(`http://127.0.0.1:${descriptor.receiverPort}/health`, {
+      headers: { "X-Feishu-Agent-Token": token },
+      signal: AbortSignal.timeout(1_500)
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { status?: unknown; service?: unknown };
+    return body.status === "ok" && body.service === "agent-link";
+  } catch {
+    return false;
+  }
+}
+
+async function agentLinkDesktopPort(): Promise<number | undefined> {
+  return (await readAgentLinkDescriptor())?.receiverPort;
+}
+
+async function readAgentLinkDescriptor(): Promise<{ pid?: number; receiverPort?: number } | undefined> {
+  try {
+    return JSON.parse(await fs.readFile(path.join(extensionStoragePath, "agent-link.json"), "utf8")) as {
+      pid?: number;
+      receiverPort?: number;
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 type ReceiverProbe = "compatible" | "occupied" | "unavailable";

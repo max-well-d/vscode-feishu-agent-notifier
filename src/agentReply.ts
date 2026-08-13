@@ -2,7 +2,7 @@ import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
-import { AgentSession, RemoteExecutionPolicy } from "./types";
+import { AgentSession, InputOrigin, RemoteExecutionPolicy } from "./types";
 import { agentSessionKey } from "./sessionRegistry";
 
 export interface AgentReplyResult {
@@ -30,7 +30,8 @@ export interface ManagedCodexExecutor {
     prompt: string,
     policy: RemoteExecutionPolicy,
     signal: AbortSignal,
-    timeoutMs: number
+    timeoutMs: number,
+    origin?: InputOrigin
   ): Promise<AgentReplyResult>;
   runClaudeChannelTurn?(
     session: AgentSession,
@@ -103,7 +104,7 @@ export class AgentReplyRunner {
         throw new Error("Codex App Server 托管执行器未初始化");
       }
       try {
-        return await this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+        return await this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs, remoteOrigin(job.chatId));
       } catch (error) {
         return this.runForkFallback(job, normalizeError(error), signal);
       }
@@ -186,7 +187,7 @@ export class AgentReplyRunner {
       if (adopted) {
         await this.onSessionAdopted?.(job, adopted);
         Object.assign(job.session, adopted);
-        return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+        return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs, remoteOrigin(job.chatId));
       }
     }
     if (!job.anchorTurnId) {
@@ -200,7 +201,7 @@ export class AgentReplyRunner {
       throw new Error(`无法创建安全的 Codex 远程分支；原会话未被打开或占用：${normalizeError(forkError).message}`);
     }
     Object.assign(job.session, forked);
-    return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+    return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs, remoteOrigin(job.chatId));
   }
 
   private async runForkFallback(
@@ -225,7 +226,7 @@ export class AgentReplyRunner {
       throw new Error(`原 Codex 会话正被本机占用，创建持久化远程分支失败：${normalizeError(forkError).message}`);
     }
     Object.assign(job.session, forked);
-    return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs);
+    return this.managedCodex.runTurn(job.session, job.prompt, job.policy, signal, this.timeoutMs, remoteOrigin(job.chatId));
   }
 }
 
@@ -269,7 +270,7 @@ export class AgentReplyQueue {
       if (item.job.chatId === chatId) {
         this.pending.splice(index, 1);
         item.controller.abort();
-        item.reject(new Error("任务已由飞书用户取消"));
+        item.reject(new Error("任务已由远程 Channel 用户取消"));
         cancelled += 1;
       }
     }
@@ -401,7 +402,7 @@ export function shouldForkClaudeSession(job: AgentReplyJob): boolean {
 
 function claudeRemoteBranch(source: AgentSession, sessionId: string, sourceTurnId: string): AgentSession {
   const sourceName = source.alias || source.name || source.project || "Claude Code";
-  const suffix = " · 飞书";
+  const suffix = " · 远程";
   const name = sourceName.endsWith(suffix) ? sourceName : `${sourceName}${suffix}`;
   return {
     ...source,
@@ -435,6 +436,12 @@ export async function hasGitMetadataAncestor(cwd: string): Promise<boolean> {
 
 function sessionKey(session: AgentSession): string {
   return agentSessionKey(session.source, session.sessionId);
+}
+
+function remoteOrigin(chatId: string): InputOrigin {
+  const separator = chatId.indexOf(":");
+  const channelId = separator > 0 ? chatId.slice(0, separator) : "feishu";
+  return channelId === "feishu" ? "feishu" : `channel:${channelId}`;
 }
 
 function runChildProcess(

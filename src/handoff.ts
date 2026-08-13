@@ -1,4 +1,4 @@
-export type InputOrigin = "local" | "feishu";
+import { InputOrigin } from "./types";
 export type SessionAuthority = "idle" | "local" | "remote";
 export type BrokerTurnState = "idle" | "running" | "unknown";
 
@@ -54,7 +54,7 @@ export function markLocalActivity(
   };
 }
 
-export function requestRemoteTurn(state: HandoffState, now = new Date()): HandoffDecision {
+export function requestRemoteTurn(state: HandoffState, now = new Date(), origin: InputOrigin = "feishu"): HandoffDecision {
   const localHasPriority = state.authority === "local"
     && (state.turnState === "running" || activeLease(state, now));
   if (localHasPriority || state.turnState === "running" || state.turnState === "unknown") {
@@ -72,7 +72,7 @@ export function requestRemoteTurn(state: HandoffState, now = new Date()): Handof
       ...state,
       authority: "remote",
       turnState: "running",
-      inputOrigin: "feishu",
+      inputOrigin: origin,
       localLeaseUntil: undefined,
       updatedAt: now.toISOString()
     }
@@ -92,7 +92,7 @@ export function startTurn(
     inputOrigin: origin,
     activeTurnId: turnId,
     localLeaseUntil: origin === "local" ? state.localLeaseUntil : undefined,
-    queuedRemoteCount: origin === "feishu" ? Math.max(0, state.queuedRemoteCount - 1) : state.queuedRemoteCount,
+    queuedRemoteCount: origin !== "local" ? Math.max(0, state.queuedRemoteCount - 1) : state.queuedRemoteCount,
     updatedAt: now.toISOString()
   };
 }

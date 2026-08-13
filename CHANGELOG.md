@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.0
+
+- Add Agent Link as an independent Electron desktop middleware with a tray, sandboxed control plane, session overview, Agent discovery, system policy settings, Hook Receiver, and Windows installer/portable targets.
+- Introduce Channel API v1, a lifecycle-aware Channel Registry, schema-driven configuration, external adapter loading, generic channel-scoped routing, and a built-in Feishu adapter that no longer defines the core boundary.
+- Move Channel credentials out of ordinary JSON and encrypt them with the operating-system-backed Electron `safeStorage`; keep only the selected data-directory pointer in the system app-data folder.
+- Reuse the existing Session Broker, Session Registry, Reply Router, Codex App Server, Claude Channel, hook and transcript implementations from the independent control plane instead of recreating Agent chat UIs.
+- Add a desktop control-plane lease so the VS Code extension automatically becomes a thin standby client while Agent Link is online, preventing duplicate Feishu WebSockets, transcript watchers, and notifications.
+- Add generic `channel:<id>` input origins, channel-and-conversation namespacing, real-time Codex/Claude transcript forwarding, approval relay, authoritative completion routing, and per-channel enable/disable/test controls.
+- Add architecture, Channel API and goal-oriented development documentation, eight new automated checks, secure TLS override handling, and reproducible Windows packaging assets.
+
 ## 0.17.1
 
 - Run the shared Codex App Server inside a dedicated Windows GUI-subsystem host that creates one hidden console for Codex, Code Mode Host, and command-safety PowerShell descendants, preventing forwarded sessions from opening visible console windows.

@@ -61,6 +61,16 @@ test("health endpoint identifies only an authenticated notifier receiver", async
   assert.deepEqual(await response.json(), { status: "ok", service: "feishu-agent-notifier" });
 });
 
+test("desktop receiver exposes a distinct authenticated service identity", async (t) => {
+  const server = new LocalHookServer("desktop-token", async () => undefined, undefined, "agent-link");
+  await server.start(0);
+  t.after(async () => server.stop());
+  const response = await fetch(`http://127.0.0.1:${server.port}/health`, {
+    headers: { "X-Feishu-Agent-Token": "desktop-token" }
+  });
+  assert.deepEqual(await response.json(), { status: "ok", service: "agent-link" });
+});
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (!predicate()) {

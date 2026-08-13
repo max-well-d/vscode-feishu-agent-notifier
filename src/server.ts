@@ -12,7 +12,8 @@ export class LocalHookServer {
   public constructor(
     private readonly token: string,
     private readonly onEvent: EventHandler,
-    private readonly normalizeEvent: EventNormalizer = normalizeAgentEvent
+    private readonly normalizeEvent: EventNormalizer = normalizeAgentEvent,
+    private readonly serviceName = "feishu-agent-notifier"
   ) {}
 
   public get port(): number | undefined {
@@ -59,7 +60,7 @@ export class LocalHookServer {
         return;
       }
       response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ status: "ok", service: "feishu-agent-notifier" }));
+      response.end(JSON.stringify({ status: "ok", service: this.serviceName }));
       return;
     }
 

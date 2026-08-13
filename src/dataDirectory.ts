@@ -9,7 +9,12 @@ const DATA_ENTRIES = [
   "broker-state.json",
   "broker-completions.json",
   "codex-shared.json",
-  "process-bridge"
+  "process-bridge",
+  "channels.json",
+  "channel-secrets.json",
+  "desktop-settings.json",
+  "desktop-hook-token",
+  "channels"
 ] as const;
 
 export function resolveDataDirectory(

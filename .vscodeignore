@@ -10,6 +10,9 @@ out/test/**
 out/**
 dist/**/*.js.map
 node_modules/**
+desktop/**
+scripts/build-desktop-assets.mjs
+scripts/build-desktop-icon.ps1
 tsconfig.json
 **/*.js.map
 *.vsix
