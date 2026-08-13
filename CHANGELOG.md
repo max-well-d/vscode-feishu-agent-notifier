@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.1
+
+- Run the shared Codex App Server inside a dedicated Windows GUI-subsystem host that creates one hidden console for Codex, Code Mode Host, and command-safety PowerShell descendants, preventing forwarded sessions from opening visible console windows.
+- Keep the hidden host content-addressed for safe upgrades and place the complete process tree in a kill-on-close Job Object so failed starts and service restarts do not leave orphaned Agent processes.
+- Hide console windows from an already-running pre-upgrade shared service without interrupting its active local session; the compatibility monitor exits with that legacy service.
+- Preserve the full official Code Mode capability instead of disabling its host process, and fall back to the previous direct launch path when the native host is unavailable.
+
 ## 0.17.0
 
 - Remove the custom managed Codex webview and its deprecated commands; status actions now open the official Codex and Claude Code interfaces so history, diffs, approvals, and new upstream features remain native.

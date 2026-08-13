@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
-import { cleanupLegacyProcessBridgeFiles, validateProcessBridgeTargets } from "../src/processBridge";
+import { cleanupLegacyProcessBridgeFiles, deployProcessBridge, validateProcessBridgeTargets } from "../src/processBridge";
 
 test("rejects a bridge launcher as the real Agent executable", () => {
   const dataDirectory = path.join(os.tmpdir(), "feishu-bridge-validation");
@@ -82,6 +82,50 @@ test("cleans only unprotected legacy Windows bridge launchers", { skip: process.
     assert.deepEqual(removed, [codex]);
     assert.equal(await fs.stat(codex).catch(() => undefined), undefined);
     assert.equal((await fs.stat(claude)).isFile(), true);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deploys a content-addressed hidden console host for shared Codex descendants", { skip: process.platform !== "win32" }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-hidden-console-host-"));
+  try {
+    const extensionPath = path.join(directory, "extension");
+    await fs.mkdir(path.join(extensionPath, "assets", "windows"), { recursive: true });
+    await fs.mkdir(path.join(extensionPath, "dist"), { recursive: true });
+    await Promise.all([
+      fs.copyFile(path.resolve(__dirname, "../../assets/windows/BridgeLauncher.cs"), path.join(extensionPath, "assets", "windows", "BridgeLauncher.cs")),
+      fs.copyFile(path.resolve(__dirname, "../../assets/windows/HiddenConsoleHost.cs"), path.join(extensionPath, "assets", "windows", "HiddenConsoleHost.cs")),
+      fs.writeFile(path.join(extensionPath, "dist", "agent-bridge.js"), "", "utf8"),
+      fs.writeFile(path.join(extensionPath, "dist", "claude-channel.js"), "", "utf8")
+    ]);
+    const dataDirectory = path.join(directory, "data");
+    const installation = await deployProcessBridge({
+      dataDirectory,
+      extensionPath,
+      runtimePath: process.execPath,
+      codexExecutable: process.execPath,
+      claudeExecutable: process.execPath
+    });
+    assert.match(path.basename(installation.windowsConsoleHost ?? ""), /^hidden-console-host-[0-9a-f]{12}\.exe$/);
+    assert.equal((await fs.stat(installation.windowsConsoleHost as string)).isFile(), true);
+    const config = JSON.parse(await fs.readFile(path.join(installation.root, "windows-console-host.json"), "utf8")) as {
+      protocolVersion: number;
+      executable: string;
+    };
+    assert.deepEqual(config, {
+      protocolVersion: 1,
+      executable: installation.windowsConsoleHost
+    });
+
+    const stale = path.join(installation.root, "hidden-console-host-000000000000.exe");
+    await fs.writeFile(stale, "stale", "utf8");
+    const removed = await cleanupLegacyProcessBridgeFiles(dataDirectory, [
+      installation.codexLauncher,
+      installation.claudeLauncher
+    ]);
+    assert.equal(removed.includes(stale), true);
+    assert.equal((await fs.stat(installation.windowsConsoleHost as string)).isFile(), true);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

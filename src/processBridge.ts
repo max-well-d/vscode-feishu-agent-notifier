@@ -18,6 +18,7 @@ export interface ProcessBridgeInstallation {
   claudeLauncher: string;
   codexCliCommand: string;
   claudeCliCommand: string;
+  windowsConsoleHost?: string;
 }
 
 export interface ProcessBridgeBackup {
@@ -66,33 +67,44 @@ export async function deployProcessBridge(options: ProcessBridgeOptions): Promis
 
   if (process.platform === "win32") {
     const source = path.join(options.extensionPath, "assets", "windows", "BridgeLauncher.cs");
+    const hostSource = path.join(options.extensionPath, "assets", "windows", "HiddenConsoleHost.cs");
     const compiled = path.join(root, "BridgeLauncher.exe");
     const compiledWindow = path.join(root, "BridgeLauncherWindow.exe");
+    const compiledHost = path.join(root, "HiddenConsoleHost.exe");
     await Promise.all([
       compileWindowsLauncher(source, compiled, false),
-      compileWindowsLauncher(source, compiledWindow, true)
+      compileWindowsLauncher(source, compiledWindow, true),
+      compileWindowsLauncher(hostSource, compiledHost, true)
     ]);
-    const [consoleId, windowId] = await Promise.all([
+    const [consoleId, windowId, hostId] = await Promise.all([
       fileContentId(source, "console"),
       fileContentId(source, "window"),
+      fileContentId(hostSource, "hidden-console-host")
     ]);
     const codexLauncher = path.join(codexDirectory, `codex-feishu-${consoleId}.exe`);
     const claudeLauncher = path.join(claudeDirectory, `claude-feishu-wrapper-${windowId}.exe`);
     const claudeCliLauncher = path.join(claudeDirectory, `claude-feishu-${consoleId}.exe`);
+    const windowsConsoleHost = path.join(root, `hidden-console-host-${hostId}.exe`);
     await Promise.all([
       copyFileIfMissing(compiled, codexLauncher),
       copyFileIfMissing(compiledWindow, claudeLauncher),
       copyFileIfMissing(compiled, claudeCliLauncher),
+      copyFileIfMissing(compiledHost, windowsConsoleHost),
       fs.writeFile(path.join(codexDirectory, "launcher.conf"), launcherConfig(options.runtimePath, bridgeScript, "codex", codexConfig, options.codexExecutable, false), { encoding: "utf8", mode: 0o600 }),
       fs.writeFile(path.join(claudeDirectory, "launcher.conf"), launcherConfig(options.runtimePath, bridgeScript, "claude", claudeConfig, options.claudeExecutable, true), { encoding: "utf8", mode: 0o600 }),
       fs.writeFile(path.join(claudeDirectory, "launcher-cli.conf"), launcherConfig(options.runtimePath, bridgeScript, "claude", claudeConfig, options.claudeExecutable, false), { encoding: "utf8", mode: 0o600 })
     ]);
+    await writeJson(path.join(root, "windows-console-host.json"), {
+      protocolVersion: 1,
+      executable: windowsConsoleHost
+    });
     return {
       root,
       codexLauncher,
       claudeLauncher,
       codexCliCommand: codexLauncher,
-      claudeCliCommand: claudeCliLauncher
+      claudeCliCommand: claudeCliLauncher,
+      windowsConsoleHost
     };
   }
 
@@ -166,6 +178,10 @@ export async function cleanupLegacyProcessBridgeFiles(
   }
   const root = path.join(dataDirectory, "process-bridge");
   const protectedSet = new Set(protectedPaths.filter((value): value is string => Boolean(value)).map((value) => path.resolve(value).toLowerCase()));
+  const currentHost = await readWindowsConsoleHost(dataDirectory);
+  if (currentHost) {
+    protectedSet.add(path.resolve(currentHost).toLowerCase());
+  }
   for (const protectedPath of [...protectedSet]) {
     const match = path.basename(protectedPath).match(/^codex-feishu-([0-9a-f]{12})\.exe$/i);
     if (match) {
@@ -175,6 +191,8 @@ export async function cleanupLegacyProcessBridgeFiles(
   const candidates = [
     path.join(root, "BridgeLauncher.exe"),
     path.join(root, "BridgeLauncherWindow.exe"),
+    path.join(root, "HiddenConsoleHost.exe"),
+    ...await matchingFiles(root, /^hidden-console-host-[0-9a-f]{12}\.exe$/i),
     ...await matchingFiles(path.join(root, "codex"), /^codex-feishu(?:-[0-9a-f]{12})?\.exe$/i),
     ...await matchingFiles(path.join(root, "claude"), /^claude-feishu(?:-wrapper)?(?:-[0-9a-f]{12})?\.exe$/i)
   ];
@@ -197,6 +215,18 @@ export async function cleanupLegacyProcessBridgeFiles(
     }
   }
   return removed;
+}
+
+async function readWindowsConsoleHost(dataDirectory: string): Promise<string | undefined> {
+  try {
+    const value = JSON.parse(await fs.readFile(path.join(dataDirectory, "process-bridge", "windows-console-host.json"), "utf8")) as {
+      protocolVersion?: unknown;
+      executable?: unknown;
+    };
+    return value.protocolVersion === 1 && typeof value.executable === "string" ? value.executable : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function matchingFiles(directory: string, pattern: RegExp): Promise<string[]> {

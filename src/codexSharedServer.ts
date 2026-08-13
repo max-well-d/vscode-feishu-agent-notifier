@@ -10,6 +10,7 @@ export interface SharedCodexDescriptor {
   endpoint: string;
   executable: string;
   startedAt: string;
+  windowsConsoleHost?: string;
 }
 
 export interface SharedCodexServerOptions {
@@ -33,6 +34,7 @@ export async function ensureSharedCodexServer(
   await fs.mkdir(options.dataDirectory, { recursive: true, mode: 0o700 });
   const existing = await readHealthyDescriptor(options.dataDirectory);
   if (existing) {
+    await startLegacyWindowMonitor(options.dataDirectory, existing);
     return existing;
   }
 
@@ -40,6 +42,7 @@ export async function ensureSharedCodexServer(
   try {
     const afterLock = await readHealthyDescriptor(options.dataDirectory);
     if (afterLock) {
+      await startLegacyWindowMonitor(options.dataDirectory, afterLock);
       return afterLock;
     }
     const stale = await readDescriptor(options.dataDirectory);
@@ -51,7 +54,10 @@ export async function ensureSharedCodexServer(
     const port = await findFreeLoopbackPort();
     const endpoint = `ws://127.0.0.1:${port}`;
     const args = sharedAppServerArgs(endpoint, options.appServerArgs ?? []);
-    const child = spawn(options.executable, args, {
+    const windowsConsoleHost = await resolveWindowsConsoleHost(options.dataDirectory);
+    const child = spawn(windowsConsoleHost ?? options.executable, windowsConsoleHost
+      ? ["--", options.executable, ...args]
+      : args, {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
@@ -78,13 +84,52 @@ export async function ensureSharedCodexServer(
       port,
       endpoint,
       executable: options.executable,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      ...(windowsConsoleHost ? { windowsConsoleHost } : {})
     };
     await atomicWriteJson(path.join(options.dataDirectory, DESCRIPTOR_NAME), descriptor);
     options.log?.info(`Codex 共享 App Server 已就绪（PID ${child.pid}，${endpoint}）。`);
     return descriptor;
   } finally {
     await release();
+  }
+}
+
+async function startLegacyWindowMonitor(
+  dataDirectory: string,
+  descriptor: SharedCodexDescriptor
+): Promise<void> {
+  if (descriptor.windowsConsoleHost || process.platform !== "win32") {
+    return;
+  }
+  const host = await resolveWindowsConsoleHost(dataDirectory);
+  if (!host) {
+    return;
+  }
+  const monitor = spawn(host, ["--hide-tree", String(descriptor.pid)], {
+    detached: true,
+    windowsHide: true,
+    stdio: "ignore"
+  });
+  monitor.unref();
+}
+
+async function resolveWindowsConsoleHost(dataDirectory: string): Promise<string | undefined> {
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+  try {
+    const value = JSON.parse(await fs.readFile(path.join(dataDirectory, "process-bridge", "windows-console-host.json"), "utf8")) as {
+      protocolVersion?: unknown;
+      executable?: unknown;
+    };
+    if (value.protocolVersion !== 1 || typeof value.executable !== "string") {
+      return undefined;
+    }
+    const stat = await fs.stat(value.executable);
+    return stat.isFile() ? value.executable : undefined;
+  } catch {
+    return undefined;
   }
 }
 
