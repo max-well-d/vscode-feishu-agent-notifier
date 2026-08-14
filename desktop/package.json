@@ -1,7 +1,7 @@
 {
   "name": "agent-link",
   "productName": "Agent Link",
-  "version": "0.20.1",
+  "version": "0.20.2",
   "description": "Local session middleware for Codex, Claude Code and pluggable messaging channels.",
   "author": "max-well-d",
   "license": "MIT",
@@ -11,6 +11,11 @@
     "appId": "io.github.max-well-d.agent-link",
     "productName": "Agent Link",
     "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US",
+      "zh-CN"
+    ],
     "directories": {
       "output": "release"
     },

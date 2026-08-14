@@ -126,6 +126,9 @@ async function boot(): Promise<void> {
   void migrateLegacyCodexWhenIdle();
   startApprovalMonitor();
   app.on("activate", showWindow);
+  app.on("window-all-closed", () => {
+    // Keep the lightweight control plane and tray alive; recreate the renderer on demand.
+  });
   app.on("before-quit", () => {
     tray?.destroy();
     quitting = true;
@@ -469,11 +472,8 @@ function createWindow(): void {
   });
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
   mainWindow.once("ready-to-show", () => mainWindow?.show());
-  mainWindow.on("close", (event) => {
-    if (!quitting) {
-      event.preventDefault();
-      mainWindow?.hide();
-    }
+  mainWindow.on("closed", () => {
+    mainWindow = undefined;
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) {
@@ -848,6 +848,7 @@ async function findAgentExecutable(source: "codex" | "claude-code"): Promise<str
 
 function showWindow(): void {
   if (!mainWindow) {
+    createWindow();
     return;
   }
   if (mainWindow.isMinimized()) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.2
+
+- Keep only the Simplified Chinese and English Electron locale packs, reducing the unpacked desktop footprint by about 49 MiB without removing runtime capabilities.
+- Use maximum installer compression and conservative syntax/whitespace minification; the Windows installer decreases from 95.49 MiB to about 87.33 MiB and `app.asar` from 6.24 MiB to about 2.59 MiB.
+- Destroy the desktop renderer after its window is closed while keeping the tray and control plane online; recreate the window on demand to reduce long-running background memory.
+- Retain Chromium licensing files, GPU fallbacks and media libraries to avoid legal, blank-window and hardware-compatibility regressions.
+
 ## 0.20.1
 
 - Make Claude Code event state terminal-monotonic: a delayed `MessageDisplay` or transcript event can no longer reopen a completed turn or emit a duplicate realtime card with the same body.
