@@ -1013,6 +1013,7 @@ async function enqueueEventAsync(
     const handoff = snapshot?.handoffs.find((item) => item.sessionId === event.sessionId);
     event.inputOrigin = handoff?.inputOrigin;
   }
+  event.inputOrigin ??= "local";
   await enrichAgentEventSessionName(event);
   const key = eventDeduplicationKey(event);
   let messageKey: string | undefined;

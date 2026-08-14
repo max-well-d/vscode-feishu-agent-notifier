@@ -123,6 +123,23 @@ export async function deployProcessBridge(options: ProcessBridgeOptions): Promis
   };
 }
 
+/** Refreshes scripts used by an already-installed bridge without replacing its launchers or settings. */
+export async function refreshProcessBridgeRuntime(dataDirectory: string, bundledDistDirectory: string): Promise<boolean> {
+  const root = path.join(dataDirectory, "process-bridge");
+  const [codexConfig, claudeConfig] = await Promise.all([
+    fs.stat(path.join(root, "codex", "bridge.json")).catch(() => undefined),
+    fs.stat(path.join(root, "claude", "bridge.json")).catch(() => undefined)
+  ]);
+  if (!codexConfig?.isFile() && !claudeConfig?.isFile()) {
+    return false;
+  }
+  await Promise.all([
+    atomicCopy(path.join(bundledDistDirectory, "agent-bridge.js"), path.join(root, "agent-bridge.js")),
+    atomicCopy(path.join(bundledDistDirectory, "claude-channel.js"), path.join(root, "claude-channel.js"))
+  ]);
+  return true;
+}
+
 export async function inspectProcessBridge(dataDirectory: string): Promise<ProcessBridgeInspection> {
   const root = path.join(dataDirectory, "process-bridge");
   const executableExtension = process.platform === "win32" ? ".exe" : "";
@@ -340,5 +357,16 @@ async function copyFileIfMissing(source: string, destination: string): Promise<v
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
       throw error;
     }
+  }
+}
+
+async function atomicCopy(source: string, destination: string): Promise<void> {
+  await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+  const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.copyFile(source, temporary);
+    await fs.rename(temporary, destination);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
   }
 }

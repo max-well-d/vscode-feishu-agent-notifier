@@ -262,6 +262,25 @@ test("cancel targets only the broker-owned turn when a local turn is observed", 
   client.dispose();
 });
 
+test("reports a foreign shared-server turn as local-client activity", async () => {
+  const requests: ProtocolMessage[] = [];
+  const observed: Array<{ threadId: string; turnId: string; owned: boolean }> = [];
+  const client = new CodexAppServerClient({
+    executable: async () => "codex",
+    version: () => "origin-test",
+    spawnImpl: fakeAppServer(requests, { emitForeignTurn: true }),
+    onTurnStarted: (threadId, turnId, owned) => observed.push({ threadId, turnId, owned })
+  });
+  const session = await client.startThread("D:\\work\\repo", "repo", "inherit");
+  await client.runTurn(session, "continue", "inherit", new AbortController().signal, 5_000);
+  assert.deepEqual(observed.find((item) => item.turnId === "turn-local"), {
+    threadId: "thread-managed",
+    turnId: "turn-local",
+    owned: false
+  });
+  client.dispose();
+});
+
 test("creates a named persistent fork at the exact completed turn", async () => {
   const requests: ProtocolMessage[] = [];
   const client = new CodexAppServerClient({

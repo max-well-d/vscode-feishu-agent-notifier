@@ -55,7 +55,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
   const claudeInbound = new Map<string, ClaudeChannelEvent[]>();
   const claudeOutbound = new Map<string, ClaudeChannelOutbound[]>();
   const claudeVerdicts = new Map<string, Array<{ requestId: string; behavior: "allow" | "deny" }>>();
-  const claudeRemoteActive = new Set<string>();
+  const claudeInputOrigins = new Map<string, "local" | "feishu">();
   const claudeSessions = new Map<string, AgentSession>();
   const remoteContexts = new Map<string, { chatId: string; inboundMessageId: string }>();
   let codexState: BrokerSnapshot["codexState"] = "stopped";
@@ -68,7 +68,20 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       codexState = state;
       codexError = detail;
     },
-    onApprovalRequest: (request) => waitForApproval(request, pendingApprovals, remoteContexts)
+    onApprovalRequest: (request) => waitForApproval(request, pendingApprovals, remoteContexts),
+    onTurnStarted: (threadId, turnId, owned) => {
+      if (owned) return;
+      const state = startTurn(handoffs.get(threadId) ?? initialHandoffState(threadId), "local", turnId);
+      handoffs.set(threadId, state);
+      void persistHandoffs(statePath, handoffs);
+    },
+    onTurnCompleted: (threadId, turnId, owned) => {
+      if (owned) return;
+      const current = handoffs.get(threadId);
+      if (!current || current.activeTurnId !== turnId) return;
+      handoffs.set(threadId, completeTurn(current));
+      void persistHandoffs(statePath, handoffs);
+    }
   });
 
   const server = http.createServer((request, response) => {
@@ -297,7 +310,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       const queue = claudeInbound.get(channelId) ?? [];
       queue.push(event);
       claudeInbound.set(channelId, queue);
-      claudeRemoteActive.add(channelId);
+      claudeInputOrigins.set(channelId, "feishu");
       sendJson(response, 200, event);
       return;
     }
@@ -322,7 +335,6 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       const queue = claudeOutbound.get(channelId) ?? [];
       queue.push(event);
       claudeOutbound.set(channelId, queue);
-      claudeRemoteActive.delete(channelId);
       const session = claudeSessions.get(channelId);
       if (session) {
         completions.push({
@@ -362,7 +374,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
     const channelState = /^\/claude\/channels\/([^/]+)\/state$/.exec(url.pathname);
     if (request.method === "GET" && channelState) {
       const channelId = decodeURIComponent(channelState[1]);
-      sendJson(response, 200, { inputOrigin: claudeRemoteActive.has(channelId) ? "feishu" : "local" });
+      sendJson(response, 200, { inputOrigin: claudeInputOrigins.get(channelId) ?? "local" });
       return;
     }
     const channelApproval = /^\/claude\/channels\/([^/]+)\/approval$/.exec(url.pathname);

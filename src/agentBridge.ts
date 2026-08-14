@@ -61,7 +61,7 @@ async function runCodexBridge(config: BridgeConfig, args: string[]): Promise<voi
       await runFallback("codex", config.realExecutable, args, error);
       return;
     }
-    await proxyJsonLines(socket);
+    await proxyJsonLines(socket, config.dataDirectory);
     return;
   }
   if (!isInteractiveCodexInvocation(args) || hasOption(args, "--remote")) {
@@ -155,10 +155,11 @@ async function connectWebSocket(endpoint: string): Promise<WebSocket> {
   return socket;
 }
 
-async function proxyJsonLines(socket: WebSocket): Promise<void> {
+async function proxyJsonLines(socket: WebSocket, dataDirectory: string): Promise<void> {
   const input = readline.createInterface({ input: process.stdin, terminal: false });
   input.on("line", (line) => {
     if (line.trim() && socket.readyState === WebSocket.OPEN) {
+      void noteLocalCodexInput(dataDirectory, line);
       socket.send(line);
     }
   });
@@ -180,6 +181,32 @@ async function proxyJsonLines(socket: WebSocket): Promise<void> {
     });
   });
   await finish;
+}
+
+async function noteLocalCodexInput(dataDirectory: string, line: string): Promise<void> {
+  let request: { method?: unknown; params?: { threadId?: unknown } };
+  try {
+    request = JSON.parse(line) as typeof request;
+  } catch {
+    return;
+  }
+  if (request.method !== "turn/start" || typeof request.params?.threadId !== "string") return;
+  try {
+    const [descriptorText, token] = await Promise.all([
+      fs.readFile(path.join(dataDirectory, "broker.json"), "utf8"),
+      fs.readFile(path.join(dataDirectory, "broker-token"), "utf8")
+    ]);
+    const descriptor = JSON.parse(descriptorText) as { port?: unknown };
+    if (typeof descriptor.port !== "number") return;
+    await fetch(`http://127.0.0.1:${descriptor.port}/local-activity`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token.trim()}`, "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: request.params.threadId, leaseMs: 30_000 }),
+      signal: AbortSignal.timeout(1_000)
+    });
+  } catch {
+    // The bridge remains fail-open when Agent Link is not running.
+  }
 }
 
 async function runFallback(

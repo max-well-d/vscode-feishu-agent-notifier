@@ -21,9 +21,10 @@ export function buildFeishuCard(
   const failed = event.status === "failed";
   const progress = event.status === "progress";
   const partLabel = part && part.total > 1 ? ` · ${part.index}/${part.total}` : "";
-  const sessionLabel = event.sessionName
-    ? `${truncate(event.sessionName, 48)} · ${event.sessionId}`
-    : event.sessionId || "未知会话";
+  const sessionName = event.sessionName?.trim() || event.project || "未知会话";
+  const sessionLabel = event.project && event.project !== sessionName
+    ? `${truncate(sessionName, 48)} · ${event.project}`
+    : truncate(sessionName, 48);
   const header = includeMetadata
     ? {
       template: failed ? "red" : progress ? "blue" : "green",
@@ -63,7 +64,7 @@ function sessionIdElement(event: AgentEvent): Record<string, unknown> {
       ? "飞书远程"
       : event.inputOrigin?.startsWith("channel:")
         ? `远程 ${event.inputOrigin.slice(8)}`
-        : "未标记";
+        : "本机客户端";
   return {
     tag: "markdown",
     content: `**${source} Session ID：** \`${escapeInlineCode(event.sessionId || "未知会话")}\`\n**输入来源：** ${origin}`

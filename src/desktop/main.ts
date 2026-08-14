@@ -13,7 +13,7 @@ import { ChannelRegistry } from "../channels/registry";
 import { ChannelConfiguration, ChannelDeliveryResult, ChannelInboundMessage, ChannelReceipt, ChannelSnapshot } from "../channels/types";
 import { AgentSession } from "../types";
 import { RemoteExecutionPolicy } from "../types";
-import { ReplyRouter } from "../replyRouter";
+import { formatSession, ReplyRouter } from "../replyRouter";
 import { discoverLocalSessions } from "../sessionCatalog";
 import { SessionRegistry } from "../sessionRegistry";
 import { installHooks, inspectHooks } from "../hookInstaller";
@@ -25,6 +25,7 @@ import { migrateLegacySharedCodexServer } from "../codexSharedServer";
 import { ClaudeTranscriptWatcher } from "../claudeTranscriptWatcher";
 import { classifyBodyDuplicate, eventBodyDeduplicationKey, eventDeduplicationKey } from "../event";
 import { DesktopConfigStore } from "./configStore";
+import { refreshProcessBridgeRuntime } from "../processBridge";
 
 interface DesktopSnapshot {
   product: string;
@@ -104,6 +105,9 @@ async function boot(): Promise<void> {
   }
   dataDirectory = await resolveDataDirectory();
   await fs.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+  if (await refreshProcessBridgeRuntime(dataDirectory, __dirname)) {
+    log("info", "已刷新本机 Agent 进程桥运行时");
+  }
   await deployLegacyWindowMonitor(
     dataDirectory,
     path.join(__dirname, "assets", "windows", "HiddenConsoleHost.cs")
@@ -363,6 +367,7 @@ async function handleAgentEvent(event: import("../types").AgentEvent): Promise<v
 }
 
 async function processAgentEvent(event: import("../types").AgentEvent): Promise<void> {
+  await enrichInputOrigin(event);
   const duplicate = duplicateEventKind(event);
   if (duplicate.kind === "exact" || duplicate.kind === "suppress") return;
   const session = await sessionRegistry.recordEvent(event);
@@ -384,6 +389,17 @@ async function processAgentEvent(event: import("../types").AgentEvent): Promise<
     duplicate.current.receipts = deliveredReceipts;
   }
   pushSnapshot();
+}
+
+async function enrichInputOrigin(event: import("../types").AgentEvent): Promise<void> {
+  if (event.inputOrigin) return;
+  if (event.channelId) {
+    event.inputOrigin = await broker.claudeInputOrigin(event.channelId).catch(() => undefined);
+  } else if (event.source === "codex") {
+    const snapshot = await broker.refresh().catch(() => broker.lastSnapshot);
+    event.inputOrigin = snapshot?.handoffs.find((item) => item.sessionId === event.sessionId)?.inputOrigin;
+  }
+  event.inputOrigin ??= "local";
 }
 
 async function updateOrDeliverTerminalEvent(
@@ -826,11 +842,6 @@ async function replyToJob(job: AgentReplyJob, text: string): Promise<void> {
   }
   const receipt = await registry.reply(inbound, text);
   await sessionRegistry.recordMessageRoute(receipt.messageId, job.session, job.anchorTurnId);
-}
-
-function formatSession(session: AgentSession): string {
-  const source = session.source === "claude-code" ? "Claude Code" : "Codex";
-  return `${source}/${session.alias || session.name || session.project} (${session.sessionId})`;
 }
 
 async function findAgentExecutable(source: "codex" | "claude-code"): Promise<string | undefined> {

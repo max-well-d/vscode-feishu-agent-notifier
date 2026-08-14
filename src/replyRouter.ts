@@ -280,6 +280,7 @@ export class ReplyRouter {
       const replyId = await this.options.reply(message,
         `${waiting ? "已排队" : "已接收"}：${formatSession(session)}\n`
         + `策略：${remoteExecutionPolicyLabel(policy)}`
+        + `\n位置：${session.cwd}`
         + `\n会话：${ownership === "managed" ? "本机/远程共享" : branchingClaude ? "从外部 Claude 会话创建持久化分支" : branchingCodex ? "优先保持原 Codex Session ID；writer 冲突时创建安全分支" : "外部完成后续写"}`
         + `${handoff ? `\n交接：${handoff}${handoff === "本地优先" ? "（等待本地输入或 turn 结束）" : ""}` : ""}`
         + `${waiting ? `\n队列位置：${result.position}` : ""}`
@@ -335,10 +336,13 @@ function formatSessions(sessions: AgentSession[]): string {
   ].join("\n");
 }
 
-function formatSession(session: AgentSession): string {
-  const name = session.alias || session.name || session.project || path.basename(session.cwd) || session.sessionId.slice(0, 8);
+export function formatSession(session: AgentSession): string {
+  const project = session.project || path.basename(session.cwd) || session.sessionId.slice(0, 8);
+  const details = [session.alias, session.name]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .filter((value, index, values) => value !== project && values.indexOf(value) === index);
   const source = session.source === "claude-code" ? "Claude Code" : "Codex";
-  return `${source}/${name} (${session.sessionId})`;
+  return `${source}/${[project, ...details].join(" · ")} (${session.sessionId})`;
 }
 
 function remoteSessionName(prompt: string, project: string): string {

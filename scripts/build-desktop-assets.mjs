@@ -14,4 +14,5 @@ await fs.copyFile(path.join(root, "desktop", "build", "icon.png"), path.join(ass
 const windowsAssets = path.join(assets, "windows");
 await fs.mkdir(windowsAssets, { recursive: true });
 await fs.copyFile(path.join(root, "assets", "windows", "HookLauncher.cs"), path.join(windowsAssets, "HookLauncher.cs"));
+await fs.copyFile(path.join(root, "assets", "windows", "BridgeLauncher.cs"), path.join(windowsAssets, "BridgeLauncher.cs"));
 await fs.copyFile(path.join(root, "assets", "windows", "HiddenConsoleHost.cs"), path.join(windowsAssets, "HiddenConsoleHost.cs"));

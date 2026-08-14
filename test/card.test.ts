@@ -23,7 +23,7 @@ test("builds a visual card header and Markdown body", () => {
   assert.match(card.header.title.content, /Codex/);
   assert.match(card.header.subtitle.content, /project/);
   assert.match(card.header.subtitle.content, /修复飞书远程控制/);
-  assert.match(card.header.subtitle.content, /1bae9e2e-c129-4826-b17c-611d7ae749ad/);
+  assert.doesNotMatch(card.header.subtitle.content, /1bae9e2e-c129-4826-b17c-611d7ae749ad/);
   assert.match(card.body.elements[0].content, /Session ID/);
   assert.match(card.body.elements[0].content, /1bae9e2e-c129-4826-b17c-611d7ae749ad/);
   assert.equal(card.body.elements[1].tag, "markdown");
@@ -60,4 +60,12 @@ test("shows the input origin beside the complete session id", () => {
   assert.match(JSON.stringify(card), /输入来源/);
   assert.match(JSON.stringify(card), /飞书远程/);
   assert.match(JSON.stringify(card), new RegExp(event.sessionId));
+  assert.equal(JSON.stringify(card).split(event.sessionId).length - 1, 1);
+});
+
+test("defaults untagged local events to a local input origin without duplicating the session id", () => {
+  const serialized = JSON.stringify(buildFeishuCard(event, "done", true));
+  assert.match(serialized, /本机客户端/);
+  assert.doesNotMatch(serialized, /未标记/);
+  assert.equal(serialized.split(event.sessionId).length - 1, 1);
 });

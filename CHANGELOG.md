@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.3
+
+- Persist every healthy shared Codex App Server descriptor and recover the oldest live service when the primary descriptor is lost or replaced, preventing a second server from reopening a VS Code-owned thread and triggering `already has an active writer`.
+- Bundle and refresh the installed Codex/Claude process-bridge runtime from Agent Link itself, so desktop upgrades no longer leave older bridge behavior behind.
+- Track local Codex `turn/start` activity at the process bridge and preserve the last Claude Channel input origin; desktop and compatibility-extension notifications now consistently distinguish local input from remote input.
+- Display session identity as Agent, project, authoritative title and full ID, show the exact working directory in reply acknowledgements, and render the complete Session ID only once per Feishu card.
+
 ## 0.20.2
 
 - Keep only the Simplified Chinese and English Electron locale packs, reducing the unpacked desktop footprint by about 49 MiB without removing runtime capabilities.

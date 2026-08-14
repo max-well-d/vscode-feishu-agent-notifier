@@ -68,6 +68,8 @@ test("routes a quoted Feishu reply to the exact persisted Agent session", async 
   assert.equal(runner.jobs[0].anchorTurnId, "turn-router");
   assert.equal(runner.jobs[0].prompt, "continue");
   assert.match(replies[0], /已接收/);
+  assert.match(replies[0], /Codex\/notifier \(session-router\)/);
+  assert.match(replies[0], new RegExp(`位置：${escapeRegExp(process.cwd())}`, "i"));
 });
 
 test("acknowledges an inbound reply before starting its Agent job", async () => {
@@ -121,6 +123,33 @@ test("supports session listing, selection, aliases, status, and inbound deduplic
   assert.equal(replies.filter((reply) => reply === "connected").length, 1);
   assert.equal(runner.jobs.at(-1)?.session.source, "claude-code");
   assert.match(runner.jobs.at(-1)?.session.sessionId ?? "", /^new:/);
+});
+
+test("shows project, authoritative title, full session id, and location separately", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-router-label-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  await registry.recordEvent({
+    ...event,
+    sessionId: "019ff39e-81a2-7da2-abdf-29e29a020275",
+    cwd: "D:\\code\\git\\LEADER",
+    project: "LEADER",
+    sessionName: "实现 Codex Claude Code 手机通知"
+  });
+  await registry.recordMessageRoute("named-session", (await registry.getSession("019ff39e-81a2-7da2-abdf-29e29a020275"))!, "turn-router");
+  const replies: string[] = [];
+  const router = new ReplyRouter({
+    registry,
+    queue: new AgentReplyQueue(new ImmediateRunner()),
+    policy: () => "inherit",
+    refreshSessions: async () => undefined,
+    reply: async (_message, text) => { replies.push(text); },
+    status: () => "connected",
+    defaultWorkspace: () => undefined
+  });
+
+  await router.handle(inbound({ parentMessageId: "named-session" }));
+  assert.match(replies[0], /Codex\/LEADER · 实现 Codex Claude Code 手机通知 \(019ff39e-81a2-7da2-abdf-29e29a020275\)/);
+  assert.match(replies[0], /位置：D:\\code\\git\\LEADER/);
 });
 
 test("rejects a file-discovered external session without an authoritative completion", async () => {
@@ -183,3 +212,7 @@ test("creates Codex sessions through the managed-session factory", async () => {
   assert.equal(runner.jobs[0].session.ownership, "managed");
   assert.equal((await registry.resolveMessage("bot-managed"))?.sessionId, "managed-thread");
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

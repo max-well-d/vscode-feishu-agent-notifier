@@ -32,21 +32,24 @@ export interface LegacySharedCodexMigrationOptions extends SharedCodexServerOpti
 
 const DESCRIPTOR_NAME = "codex-shared.json";
 const LOCK_NAME = "codex-shared.lock";
+const HISTORY_DIRECTORY = "codex-shared-servers";
 
 export async function ensureSharedCodexServer(
   options: SharedCodexServerOptions
 ): Promise<SharedCodexDescriptor> {
   await fs.mkdir(options.dataDirectory, { recursive: true, mode: 0o700 });
-  const existing = await readHealthyDescriptor(options.dataDirectory);
+  const existing = await resolveCanonicalDescriptor(options.dataDirectory);
   if (existing) {
+    await rememberDescriptor(options.dataDirectory, existing);
     await startLegacyWindowMonitor(options.dataDirectory, existing);
     return existing;
   }
 
   const release = await acquireLock(options.dataDirectory, options.startTimeoutMs ?? 10_000);
   try {
-    const afterLock = await readHealthyDescriptor(options.dataDirectory);
+    const afterLock = await resolveCanonicalDescriptor(options.dataDirectory);
     if (afterLock) {
+      await rememberDescriptor(options.dataDirectory, afterLock);
       await startLegacyWindowMonitor(options.dataDirectory, afterLock);
       return afterLock;
     }
@@ -93,6 +96,7 @@ export async function ensureSharedCodexServer(
       ...(windowsConsoleHost ? { windowsConsoleHost } : {})
     };
     await atomicWriteJson(path.join(options.dataDirectory, DESCRIPTOR_NAME), descriptor);
+    await rememberDescriptor(options.dataDirectory, descriptor);
     options.log?.info(`Codex 共享 App Server 已就绪（PID ${child.pid}，${endpoint}）。`);
     return descriptor;
   } finally {
@@ -129,6 +133,7 @@ export async function migrateLegacySharedCodexServer(
       options.log?.info(`Migrating legacy Codex App Server ${descriptor.pid} to the hidden console host.`);
       await terminateProcessTree(host, descriptor.pid);
       await fs.rm(path.join(options.dataDirectory, DESCRIPTOR_NAME), { force: true });
+      await fs.rm(historyPath(options.dataDirectory, descriptor.pid), { force: true });
       await fs.rm(path.join(options.dataDirectory, LOCK_NAME), { force: true });
       const replacement = await ensureSharedCodexServer(options);
       if (!replacement.windowsConsoleHost) {
@@ -329,9 +334,56 @@ async function readHealthyDescriptor(dataDirectory: string): Promise<SharedCodex
   return await isHealthy(descriptor.endpoint) ? descriptor : undefined;
 }
 
+async function resolveCanonicalDescriptor(dataDirectory: string): Promise<SharedCodexDescriptor | undefined> {
+  const directory = path.join(dataDirectory, HISTORY_DIRECTORY);
+  const candidates: SharedCodexDescriptor[] = [];
+  const primary = await readDescriptor(dataDirectory);
+  if (primary && processIsAlive(primary.pid) && await isHealthy(primary.endpoint)) {
+    candidates.push(primary);
+  }
+  for (const entry of await fs.readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const filePath = path.join(directory, entry.name);
+    const descriptor = await readDescriptorFile(filePath);
+    if (!descriptor || !processIsAlive(descriptor.pid) || !await isHealthy(descriptor.endpoint)) {
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      continue;
+    }
+    if (!candidates.some((candidate) => candidate.pid === descriptor.pid && candidate.endpoint === descriptor.endpoint)) {
+      candidates.push(descriptor);
+    }
+  }
+  // The oldest healthy service is canonical: existing IDE clients may still be
+  // attached to it, while a newer entry can be the product of an interrupted upgrade.
+  const recovered = candidates.sort((a, b) => timestamp(a.startedAt) - timestamp(b.startedAt))[0];
+  if (recovered) {
+    await atomicWriteJson(path.join(dataDirectory, DESCRIPTOR_NAME), recovered);
+  }
+  return recovered;
+}
+
+function timestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+}
+
+async function rememberDescriptor(dataDirectory: string, descriptor: SharedCodexDescriptor): Promise<void> {
+  const directory = path.join(dataDirectory, HISTORY_DIRECTORY);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await atomicWriteJson(historyPath(dataDirectory, descriptor.pid), descriptor);
+}
+
+function historyPath(dataDirectory: string, pid: number): string {
+  return path.join(dataDirectory, HISTORY_DIRECTORY, `${pid}.json`);
+}
+
 async function readDescriptor(dataDirectory: string): Promise<SharedCodexDescriptor | undefined> {
+  return readDescriptorFile(path.join(dataDirectory, DESCRIPTOR_NAME));
+}
+
+async function readDescriptorFile(filePath: string): Promise<SharedCodexDescriptor | undefined> {
   try {
-    const value = JSON.parse(await fs.readFile(path.join(dataDirectory, DESCRIPTOR_NAME), "utf8")) as Partial<SharedCodexDescriptor>;
+    const value = JSON.parse(await fs.readFile(filePath, "utf8")) as Partial<SharedCodexDescriptor>;
     if (value.protocolVersion !== 1
       || typeof value.pid !== "number"
       || typeof value.port !== "number"

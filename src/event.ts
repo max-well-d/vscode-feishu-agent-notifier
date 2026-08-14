@@ -139,7 +139,7 @@ export function formatEventMessage(event: AgentEvent, includeMetadata: boolean):
     `Session ID：${event.sessionId || "未知"}`,
     `项目：${event.project}`,
     `状态：${status}`,
-    `输入来源：${event.inputOrigin === "local" ? "本机客户端" : event.inputOrigin === "feishu" ? "飞书远程" : event.inputOrigin?.startsWith("channel:") ? `远程 ${event.inputOrigin.slice(8)}` : "未标记"}`,
+    `输入来源：${event.inputOrigin === "feishu" ? "飞书远程" : event.inputOrigin?.startsWith("channel:") ? `远程 ${event.inputOrigin.slice(8)}` : "本机客户端"}`,
     `时间：${new Date(event.occurredAt).toLocaleString("zh-CN", { hour12: false })}`
   ];
 

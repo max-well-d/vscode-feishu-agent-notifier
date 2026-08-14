@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
-import { cleanupLegacyProcessBridgeFiles, deployProcessBridge, validateProcessBridgeTargets } from "../src/processBridge";
+import { cleanupLegacyProcessBridgeFiles, deployProcessBridge, refreshProcessBridgeRuntime, validateProcessBridgeTargets } from "../src/processBridge";
 
 test("rejects a bridge launcher as the real Agent executable", () => {
   const dataDirectory = path.join(os.tmpdir(), "feishu-bridge-validation");
@@ -65,6 +65,30 @@ test("uses the original Claude process when Channel injection setup fails", asyn
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "channel-fallback-ok");
     assert.match(result.stderr, /starting the original Agent/);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("refreshes an installed process bridge from desktop bundled scripts", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agent-link-bridge-refresh-"));
+  try {
+    const dist = path.join(directory, "dist");
+    const bridgeRoot = path.join(directory, "data", "process-bridge");
+    await Promise.all([
+      fs.mkdir(dist, { recursive: true }),
+      fs.mkdir(path.join(bridgeRoot, "codex"), { recursive: true })
+    ]);
+    await Promise.all([
+      fs.writeFile(path.join(dist, "agent-bridge.js"), "new-agent", "utf8"),
+      fs.writeFile(path.join(dist, "claude-channel.js"), "new-claude", "utf8"),
+      fs.writeFile(path.join(bridgeRoot, "codex", "bridge.json"), "{}", "utf8"),
+      fs.writeFile(path.join(bridgeRoot, "agent-bridge.js"), "old-agent", "utf8")
+    ]);
+
+    assert.equal(await refreshProcessBridgeRuntime(path.join(directory, "data"), dist), true);
+    assert.equal(await fs.readFile(path.join(bridgeRoot, "agent-bridge.js"), "utf8"), "new-agent");
+    assert.equal(await fs.readFile(path.join(bridgeRoot, "claude-channel.js"), "utf8"), "new-claude");
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

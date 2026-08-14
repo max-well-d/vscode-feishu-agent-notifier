@@ -40,6 +40,8 @@ export interface CodexAppServerOptions {
   };
   onState?: (state: AppServerState, detail?: string) => void;
   onApprovalRequest?: (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>;
+  onTurnStarted?: (threadId: string, turnId: string, owned: boolean) => void;
+  onTurnCompleted?: (threadId: string, turnId: string, owned: boolean) => void;
 }
 
 export interface CodexThreadMetadata {
@@ -66,6 +68,7 @@ export class CodexAppServerClient {
   private readonly turnMessages = new Map<string, string>();
   private readonly activeTurns = new Map<string, string>();
   private readonly ownedTurns = new Map<string, string>();
+  private readonly pendingOwnedThreads = new Set<string>();
   private readonly loadedThreads = new Set<string>();
   private readonly metadataCache = new Map<string, { value: CodexThreadMetadata; cachedAt: number }>();
   private disposed = false;
@@ -259,11 +262,17 @@ export class CodexAppServerClient {
       throw new Error("远程 Agent 回复已取消");
     }
 
-    const start = await this.request("turn/start", {
-      threadId: session.sessionId,
-      input: [{ type: "text", text: prompt }],
-      ...turnPermissionOverrides(policy)
-    });
+    this.pendingOwnedThreads.add(session.sessionId);
+    let start: JsonObject;
+    try {
+      start = await this.request("turn/start", {
+        threadId: session.sessionId,
+        input: [{ type: "text", text: prompt }],
+        ...turnPermissionOverrides(policy)
+      });
+    } finally {
+      this.pendingOwnedThreads.delete(session.sessionId);
+    }
     const turn = objectValue(start.turn);
     const turnId = stringValue(turn?.id);
     if (!turnId) {
@@ -686,6 +695,11 @@ export class CodexAppServerClient {
       const turnId = stringValue(turn?.id);
       if (threadId && turnId) {
         this.activeTurns.set(threadId, turnId);
+        this.options.onTurnStarted?.(
+          threadId,
+          turnId,
+          this.pendingOwnedThreads.has(threadId) || this.ownedTurns.get(threadId) === turnId
+        );
       }
       return;
     }
@@ -703,6 +717,9 @@ export class CodexAppServerClient {
       const threadId = stringValue(params.threadId);
       if (threadId && this.activeTurns.get(threadId) === turnId) {
         this.activeTurns.delete(threadId);
+      }
+      if (threadId && turnId) {
+        this.options.onTurnCompleted?.(threadId, turnId, this.ownedTurns.get(threadId) === turnId);
       }
       if (!turnId) {
         return;
@@ -726,6 +743,7 @@ export class CodexAppServerClient {
       this.loadedThreads.clear();
       this.activeTurns.clear();
       this.ownedTurns.clear();
+      this.pendingOwnedThreads.clear();
       this.rejectAll(error);
     }
     if (!this.disposed) {
