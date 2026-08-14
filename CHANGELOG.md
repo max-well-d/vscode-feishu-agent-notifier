@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.5
+
+- Shut down every component when Agent Link exits instead of leaving daemons behind. The quit path now waits for the Hook Receiver and Channel Registry to close, stops both transcript watchers, asks the Session Broker to exit gracefully through an authenticated `POST /shutdown` endpoint (SIGTERM fallback for older brokers), removes the `agent-link.json` control-plane descriptor, and only then terminates the app.
+- Make Claude Channel helper processes exit on their own once the control plane is gone: after 30 consecutive broker fetch failures they end instead of polling a dead broker forever.
+- The VS Code extension now automatically resumes its own receiver when Agent Link exits and its descriptor disappears.
+
 ## 0.20.4
 
 - Restore completion-only notification delivery in Agent Link: add a 消息投递时机 setting (实时逐条 / 仅任务结束) on the system settings page, persisted in `desktop-settings.json`. The Hook Receiver normalizer and Codex transcript watcher now read the configured timing instead of being hardcoded to realtime; in completion mode the Claude transcript watcher stays off and Claude Code terminal state comes from the authoritative Stop / StopFailure hooks.

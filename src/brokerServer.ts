@@ -126,6 +126,11 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
       sendJson(response, 200, snapshot());
       return;
     }
+    if (request.method === "POST" && url.pathname === "/shutdown") {
+      sendJson(response, 200, { ok: true });
+      void shutdown().finally(() => process.exit(0));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/codex/reconnect") {
       await codex.ensureReady();
       sendJson(response, 200, { ready: true });

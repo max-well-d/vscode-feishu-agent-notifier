@@ -214,6 +214,41 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
     this.snapshot = undefined;
   }
 
+  /**
+   * Ask the broker to exit cleanly and wait until it is gone.
+   * Prefers the authenticated /shutdown endpoint; falls back to SIGTERM and
+   * removes the descriptor and lock once the process is no longer alive.
+   */
+  public async shutdown(timeoutMs = 6_000): Promise<void> {
+    const descriptor = this.descriptor;
+    this.descriptor = undefined;
+    this.snapshot = undefined;
+    if (!descriptor || !processIsAlive(descriptor.pid)) {
+      await fs.rm(path.join(this.options.dataDirectory, "broker.json"), { force: true }).catch(() => undefined);
+      return;
+    }
+    try {
+      await this.call("POST", "/shutdown", undefined, undefined, 2_000, false);
+    } catch {
+      // Older broker without the endpoint: SIGTERM still terminates the process.
+      try {
+        process.kill(descriptor.pid, "SIGTERM");
+      } catch (error) {
+        if (processIsAlive(descriptor.pid)) throw error;
+      }
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (processIsAlive(descriptor.pid) && Date.now() < deadline) {
+      await delay(50);
+    }
+    if (!processIsAlive(descriptor.pid)) {
+      await fs.rm(path.join(this.options.dataDirectory, "broker.json"), { force: true }).catch(() => undefined);
+      await fs.rm(path.join(this.options.dataDirectory, "broker.lock"), { force: true }).catch(() => undefined);
+    } else {
+      this.options.log?.warn(`Session Broker ${descriptor.pid} 未能在 ${timeoutMs}ms 内退出`);
+    }
+  }
+
   private ensureStarted(): Promise<void> {
     if (this.starting) {
       return this.starting;

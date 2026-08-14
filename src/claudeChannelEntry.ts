@@ -24,6 +24,10 @@ if (!configuredDataDirectory || !configuredChannelId) {
 const dataDirectory = configuredDataDirectory as string;
 const channelId = configuredChannelId as string;
 
+/** Consecutive control-plane failures after which the channel exits on its own. */
+const CONTROL_PLANE_FAILURE_LIMIT = 30;
+let controlPlaneFailures = 0;
+
 let activeEvent: ClaudeChannelEvent | undefined;
 const server = new Server<any, ChannelNotification, any>(
   { name: "feishu-agent-notifier", version: "1.0.0" },
@@ -157,20 +161,30 @@ async function pollVerdicts(): Promise<void> {
 }
 
 async function brokerFetch<T>(method: "GET" | "POST", route: string, body?: unknown): Promise<T> {
-  const descriptor = JSON.parse(await fs.readFile(path.join(dataDirectory, "broker.json"), "utf8")) as BrokerDescriptor;
-  const token = (await fs.readFile(path.join(dataDirectory, "broker-token"), "utf8")).trim();
-  const response = await fetch(`http://127.0.0.1:${descriptor.port}${route}`, {
-    method,
-    headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000)
-  });
-  const text = await response.text();
-  const value = text ? JSON.parse(text) as Record<string, unknown> : {};
-  if (!response.ok) {
-    throw new Error(typeof value.error === "string" ? value.error : `Broker HTTP ${response.status}`);
+  try {
+    const descriptor = JSON.parse(await fs.readFile(path.join(dataDirectory, "broker.json"), "utf8")) as BrokerDescriptor;
+    const token = (await fs.readFile(path.join(dataDirectory, "broker-token"), "utf8")).trim();
+    const response = await fetch(`http://127.0.0.1:${descriptor.port}${route}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000)
+    });
+    const text = await response.text();
+    const value = text ? JSON.parse(text) as Record<string, unknown> : {};
+    if (!response.ok) {
+      throw new Error(typeof value.error === "string" ? value.error : `Broker HTTP ${response.status}`);
+    }
+    controlPlaneFailures = 0;
+    return value as T;
+  } catch (error) {
+    controlPlaneFailures += 1;
+    if (controlPlaneFailures >= CONTROL_PLANE_FAILURE_LIMIT) {
+      process.stderr.write("Agent Link 控制面已关闭；Claude Channel 自动结束。\n");
+      process.exit(0);
+    }
+    throw error;
   }
-  return value as T;
 }
 
 function delay(ms: number): Promise<void> {

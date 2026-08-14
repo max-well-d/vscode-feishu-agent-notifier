@@ -86,6 +86,7 @@ interface RecentBodyDelivery {
 const recentBodies = new Map<string, RecentBodyDelivery>();
 let dataDirectory = "";
 let quitting = false;
+let shutdownStarted = false;
 let installedHookRuntime: HookRuntimeInstallation | undefined;
 
 if (!app.requestSingleInstanceLock()) {
@@ -133,16 +134,19 @@ async function boot(): Promise<void> {
   app.on("window-all-closed", () => {
     // Keep the lightweight control plane and tray alive; recreate the renderer on demand.
   });
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (shutdownStarted) {
+      return;
+    }
+    shutdownStarted = true;
+    event.preventDefault();
     tray?.destroy();
     quitting = true;
-    if (approvalTimer) clearInterval(approvalTimer);
-    void registry.stop();
-    void hookServer.stop();
-    codexWatcher?.stop();
-    claudeWatcher?.stop();
-    void removeDesktopDescriptor();
-    broker.dispose();
+    log("info", "Agent Link 正在退出并关闭全部组件…");
+    void shutdownAll().finally(() => {
+      log("info", "Agent Link 已完全退出。");
+      app.exit(0);
+    });
   });
 }
 
@@ -312,6 +316,18 @@ async function removeDesktopDescriptor(): Promise<void> {
   } catch {
     // Another desktop instance may already own the descriptor.
   }
+}
+
+async function shutdownAll(): Promise<void> {
+  codexWatcher?.stop();
+  codexWatcher = undefined;
+  claudeWatcher?.stop();
+  claudeWatcher = undefined;
+  if (approvalTimer) clearInterval(approvalTimer);
+  await hookServer?.stop().catch(() => undefined);
+  await registry.stop().catch(() => undefined);
+  await broker.shutdown().catch(() => undefined);
+  await removeDesktopDescriptor().catch(() => undefined);
 }
 
 async function startHookReceiver(): Promise<void> {

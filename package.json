@@ -2,7 +2,7 @@
   "name": "feishu-agent-notifier",
   "displayName": "Feishu Agent Notifier",
   "description": "Send Codex and Claude Code messages to Feishu in realtime and securely resume local sessions from quoted replies.",
-  "version": "0.20.4",
+  "version": "0.20.5",
   "publisher": "local",
   "author": "max-well-d",
   "license": "MIT",
