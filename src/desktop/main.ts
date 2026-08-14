@@ -367,7 +367,7 @@ async function handleAgentEvent(event: import("../types").AgentEvent): Promise<v
 }
 
 async function processAgentEvent(event: import("../types").AgentEvent): Promise<void> {
-  await enrichInputOrigin(event);
+  await enrichAgentEvent(event);
   const duplicate = duplicateEventKind(event);
   if (duplicate.kind === "exact" || duplicate.kind === "suppress") return;
   const session = await sessionRegistry.recordEvent(event);
@@ -391,15 +391,24 @@ async function processAgentEvent(event: import("../types").AgentEvent): Promise<
   pushSnapshot();
 }
 
-async function enrichInputOrigin(event: import("../types").AgentEvent): Promise<void> {
-  if (event.inputOrigin) return;
-  if (event.channelId) {
-    event.inputOrigin = await broker.claudeInputOrigin(event.channelId).catch(() => undefined);
-  } else if (event.source === "codex") {
-    const snapshot = await broker.refresh().catch(() => broker.lastSnapshot);
-    event.inputOrigin = snapshot?.handoffs.find((item) => item.sessionId === event.sessionId)?.inputOrigin;
+async function enrichAgentEvent(event: import("../types").AgentEvent): Promise<void> {
+  if (!event.inputOrigin) {
+    if (event.channelId) {
+      event.inputOrigin = await broker.claudeInputOrigin(event.channelId).catch(() => undefined);
+    } else if (event.source === "codex") {
+      const snapshot = await broker.refresh().catch(() => broker.lastSnapshot);
+      event.inputOrigin = snapshot?.handoffs.find((item) => item.sessionId === event.sessionId)?.inputOrigin;
+    }
+    event.inputOrigin ??= "local";
   }
-  event.inputOrigin ??= "local";
+  if (event.source === "codex" && event.sessionId) {
+    const metadata = await broker.readThreadMetadata(event.sessionId).catch(() => undefined);
+    if (metadata?.name) event.sessionName = metadata.name;
+  }
+  if (!event.sessionName) {
+    const known = await sessionRegistry.getSession(`${event.source}:${event.sessionId}`);
+    event.sessionName = known?.alias || known?.name;
+  }
 }
 
 async function updateOrDeliverTerminalEvent(
