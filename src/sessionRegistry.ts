@@ -71,13 +71,17 @@ export class SessionRegistry {
         ? Object.entries(document.sessions).find(([, value]) => value.channelId === event.channelId)
         : undefined;
       const previous = document.sessions[key] ?? channelPrevious?.[1];
+      const lateProgressForCompletedTurn = event.status === "progress"
+        && previous?.status !== "progress"
+        && Boolean(previous?.lastCompletedTurnId)
+        && (!event.turnId || event.turnId === previous.lastCompletedTurnId);
       const session: AgentSession = {
         source: event.source,
         sessionId: event.sessionId,
         cwd: event.cwd || previous?.cwd || "",
         project: event.project || previous?.project || path.basename(event.cwd) || "unknown",
         lastSeenAt: event.occurredAt || this.now().toISOString(),
-        status: event.status,
+        status: lateProgressForCompletedTurn ? previous?.status ?? event.status : event.status,
         name: event.sessionName || previous?.name,
         alias: previous?.alias,
         ownership: event.managedBackend ? "managed" : previous?.ownership ?? "external",

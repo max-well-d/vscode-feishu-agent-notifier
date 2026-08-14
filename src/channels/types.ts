@@ -70,6 +70,11 @@ export interface ChannelAdapter {
     target: ChannelTarget | undefined,
     config: Record<string, unknown>
   ): Promise<ChannelDeliveryResult>;
+  update?(
+    receipts: ChannelReceipt[],
+    event: AgentEvent,
+    config: Record<string, unknown>
+  ): Promise<boolean>;
   reply?(
     message: ChannelInboundMessage,
     text: string,

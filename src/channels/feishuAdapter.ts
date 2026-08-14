@@ -107,6 +107,14 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     };
   }
 
+  public async update(receipts: ChannelReceipt[], event: AgentEvent, raw: Record<string, unknown>): Promise<boolean> {
+    const config = parseFeishuConfig(raw);
+    return this.sender.updateEvent(event, receipts.map((receipt) => ({
+      messageId: receipt.messageId,
+      chunkIndex: receipt.chunkIndex ?? 1
+    })), config);
+  }
+
   public async reply(message: ChannelInboundMessage, text: string): Promise<ChannelReceipt> {
     if (!this.inbound) {
       throw new Error("飞书入站连接未启动");

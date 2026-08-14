@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  classifyBodyDuplicate,
+  eventBodyDeduplicationKey,
   isCrossOriginDuplicate,
   shouldSuppressCrossOriginDuplicate,
   eventBelongsToWorkspace,
@@ -113,4 +115,27 @@ test("terminal Hook events upgrade realtime messages instead of being deduplicat
     { origin: "notify", status: "completed" },
     { origin: "hook", status: "completed" }
   ), true);
+});
+
+test("normalizes harmless whitespace before comparing realtime and terminal bodies", () => {
+  const base = { source: "claude-code" as const, sessionId: "claude-1" };
+  assert.equal(
+    eventBodyDeduplicationKey({ ...base, message: "line one\r\nline two   \r\n" }),
+    eventBodyDeduplicationKey({ ...base, message: "line one\nline two" })
+  );
+});
+
+test("keeps terminal state monotonic for delayed Claude progress events", () => {
+  assert.equal(classifyBodyDuplicate(
+    { origin: "hook", status: "completed", turnId: "turn-1" },
+    { origin: "display-hook", status: "progress", turnId: "" }
+  ), "suppress");
+  assert.equal(classifyBodyDuplicate(
+    { origin: "display-hook", status: "progress", turnId: "turn-1" },
+    { origin: "hook", status: "completed", turnId: "turn-1" }
+  ), "upgrade");
+  assert.equal(classifyBodyDuplicate(
+    { origin: "hook", status: "completed", turnId: "turn-1" },
+    { origin: "display-hook", status: "progress", turnId: "turn-2" }
+  ), "none");
 });

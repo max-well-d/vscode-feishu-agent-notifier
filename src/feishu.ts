@@ -66,6 +66,47 @@ export class FeishuSender {
     return { count: chunks.length, receipts };
   }
 
+  public async updateEvent(
+    event: AgentEvent,
+    receipts: Array<Pick<FeishuDeliveryReceipt, "messageId" | "chunkIndex">>,
+    config: NotifierConfig
+  ): Promise<boolean> {
+    if (config.deliveryMode !== "app" || receipts.length === 0) {
+      return false;
+    }
+    validateConfig(config);
+    const textMode = config.messageFormat === "text";
+    const message = textMode ? formatEventMessage(event, config.includeMetadata) : event.message;
+    const plainChunks = splitMessage(message, config.maxChunkCharacters);
+    const chunks = textMode ? addChunkLabels(plainChunks) : plainChunks;
+    const ordered = [...receipts].sort((a, b) => a.chunkIndex - b.chunkIndex);
+    if (ordered.length !== chunks.length) {
+      return false;
+    }
+    const token = await this.getTenantAccessToken(config);
+    for (let index = 0; index < ordered.length; index += 1) {
+      const receipt = ordered[index];
+      const chunk = chunks[index];
+      const card = textMode ? undefined : buildFeishuCard(event, chunk, config.includeMetadata, {
+        index: index + 1,
+        total: chunks.length
+      });
+      const endpoint = `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(receipt.messageId)}`;
+      const response = await this.fetchWithRetry(endpoint, {
+        method: card ? "PATCH" : "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        body: JSON.stringify(card
+          ? { content: JSON.stringify(card) }
+          : { msg_type: "text", content: JSON.stringify({ text: chunk }) })
+      }, config);
+      await ensureFeishuSuccess(response);
+    }
+    return true;
+  }
+
   private async sendWebhook(
     text: string,
     card: FeishuCard | undefined,

@@ -6,7 +6,7 @@ import { AgentCapabilities, detectAgentCapabilities } from "./agentCapabilities"
 import { resolveAgentExecutable, ResumableAgentSource } from "./agentExecutable";
 import { ClaudeTranscriptWatcher } from "./claudeTranscriptWatcher";
 import { CodexTranscriptWatcher } from "./codexTranscriptWatcher";
-import { eventDeduplicationKey, shouldSuppressCrossOriginDuplicate } from "./event";
+import { classifyBodyDuplicate, eventBodyDeduplicationKey, eventDeduplicationKey } from "./event";
 import { FeishuSender, validateConfig } from "./feishu";
 import { FeishuInboundClient } from "./feishuInbound";
 import { inspectHooks, installHooks, uninstallHooks } from "./hookInstaller";
@@ -37,6 +37,7 @@ import {
   AgentSession,
   DeliveryMode,
   DeliveryTiming,
+  FeishuDeliveryReceipt,
   MessageFormat,
   NotifierConfig,
   ReceiveIdType,
@@ -106,11 +107,14 @@ let statusSnapshot: StatusSnapshot = {
   activeDeliveries: 0
 };
 const recentEvents = new Map<string, number>();
-const recentMessageBodies = new Map<string, {
+interface RecentMessageBody {
   timestamp: number;
   origin: AgentEvent["origin"];
   status: AgentEvent["status"];
-}>();
+  turnId: string;
+  receipts?: FeishuDeliveryReceipt[];
+}
+const recentMessageBodies = new Map<string, RecentMessageBody>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   activeExtensionId = context.extension.id;
@@ -1010,28 +1014,45 @@ async function enqueueEventAsync(
     event.inputOrigin = handoff?.inputOrigin;
   }
   await enrichAgentEventSessionName(event);
-  await sessionRegistry?.recordEvent(event);
-  if (eventIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), event.cwd)) {
-    output?.info(`当前工作区已暂停，跳过 ${event.source}/${event.project} 通知。`);
-    return;
-  }
   const key = eventDeduplicationKey(event);
   let messageKey: string | undefined;
+  let previousBody: RecentMessageBody | undefined;
+  let currentBody: RecentMessageBody | undefined;
+  let bodyDecision: ReturnType<typeof classifyBodyDuplicate> = "none";
   const now = Date.now();
   cleanupRecentEvents(now);
   if (key !== "unknown:::Stop" && recentEvents.has(key)) {
     output?.info(`忽略重复事件：${key}`);
     return Promise.resolve();
   }
-  recentEvents.set(key, now);
   if (queueOnFailure && getSetting<DeliveryTiming>("deliveryTiming", "realtime") === "realtime") {
-    messageKey = realtimeMessageKey(event);
-    const observed = recentMessageBodies.get(messageKey);
-    if (observed && shouldSuppressCrossOriginDuplicate(observed, event)) {
+    messageKey = eventBodyDeduplicationKey(event);
+    previousBody = recentMessageBodies.get(messageKey);
+    bodyDecision = previousBody ? classifyBodyDuplicate(previousBody, event) : "none";
+    if (bodyDecision === "suppress") {
       output?.info(`忽略 transcript/Hook 重复消息：${event.source}/${event.sessionId}`);
       return Promise.resolve();
     }
-    recentMessageBodies.set(messageKey, { timestamp: now, origin: event.origin, status: event.status });
+    currentBody = {
+      timestamp: now,
+      origin: event.origin,
+      status: event.status,
+      turnId: event.turnId,
+      receipts: bodyDecision === "upgrade" ? previousBody?.receipts : undefined
+    };
+    recentMessageBodies.set(messageKey, currentBody);
+  }
+  recentEvents.set(key, now);
+  await sessionRegistry?.recordEvent(event);
+  if (eventIsPaused(await readPausedWorkspaceRoots(workspacePauseFile()), event.cwd)) {
+    if (recentEvents.get(key) === now) {
+      recentEvents.delete(key);
+    }
+    if (messageKey && currentBody && recentMessageBodies.get(messageKey) === currentBody) {
+      recentMessageBodies.delete(messageKey);
+    }
+    output?.info(`当前工作区已暂停，跳过 ${event.source}/${event.project} 通知。`);
+    return;
   }
   void showLocalNotification(event).catch((error) => {
     output?.warn(`本地提醒失败：${(error as Error).message}`);
@@ -1048,9 +1069,23 @@ async function enqueueEventAsync(
           event,
           getSetting<ProjectDestinations>("projectDestinations", {})
         );
-        const result = await sender.sendEvent(event, config);
+        let result;
+        if (bodyDecision === "upgrade" && previousBody?.receipts?.length) {
+          try {
+            const updated = await sender.updateEvent(event, previousBody.receipts, config);
+            if (updated) {
+              result = { count: previousBody.receipts.length, receipts: previousBody.receipts };
+            }
+          } catch (error) {
+            output?.warn(`无法将实时卡片原位更新为完成态，将发送完成通知：${(error as Error).message}`);
+          }
+        }
+        result ??= await sender.sendEvent(event, config);
         if (result.count > 0) {
           await sessionRegistry?.recordDelivery(event, result.receipts);
+          if (messageKey && currentBody && recentMessageBodies.get(messageKey) === currentBody) {
+            currentBody.receipts = result.receipts;
+          }
           lastDeliverySuccess = new Date().toISOString();
           lastDeliveryError = undefined;
           output?.info(`已发送 ${event.source}/${event.project}，共 ${result.count} 条飞书消息。`);
@@ -2298,12 +2333,6 @@ function cleanupRecentEvents(now: number): void {
       recentMessageBodies.delete(key);
     }
   }
-}
-
-function realtimeMessageKey(event: AgentEvent): string {
-  return crypto.createHash("sha256")
-    .update(`${event.source}\0${event.sessionId}\0${event.message}`)
-    .digest("hex");
 }
 
 async function showOperationError(prefix: string, error: unknown): Promise<void> {

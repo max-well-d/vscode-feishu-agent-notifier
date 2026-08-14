@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { AgentEvent } from "./types";
 
@@ -78,21 +79,43 @@ export function isCrossOriginDuplicate(
   return Boolean(previousOrigin && currentOrigin && previousOrigin !== currentOrigin);
 }
 
-export function shouldSuppressCrossOriginDuplicate(
-  previous: Pick<AgentEvent, "origin" | "status">,
-  current: Pick<AgentEvent, "origin" | "status">
-): boolean {
-  if (!isCrossOriginDuplicate(previous.origin, current.origin)) {
-    return false;
+export type BodyDuplicateDecision = "none" | "suppress" | "upgrade";
+
+export function classifyBodyDuplicate(
+  previous: Pick<AgentEvent, "origin" | "status" | "turnId">,
+  current: Pick<AgentEvent, "origin" | "status" | "turnId">
+): BodyDuplicateDecision {
+  if (previous.turnId && current.turnId && previous.turnId !== current.turnId) {
+    return "none";
   }
-  // A terminal Hook is authoritative. It must upgrade a previously delivered
-  // realtime/transcript message instead of being discarded as the same body.
+  if (previous.status !== "progress" && current.status === "progress") {
+    return "suppress";
+  }
   if (previous.status === "progress" && current.status !== "progress") {
-    return false;
+    return "upgrade";
   }
-  // Conversely, a late transcript/display event must not downgrade a terminal
-  // notification that has already been delivered.
-  return true;
+  return isCrossOriginDuplicate(previous.origin, current.origin) ? "suppress" : "none";
+}
+
+export function eventBodyDeduplicationKey(event: Pick<AgentEvent, "source" | "sessionId" | "message">): string {
+  const body = event.message
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+  const bodyHash = crypto.createHash("sha256").update(body).digest("hex");
+  return `${event.source}:${event.sessionId}:${bodyHash}`;
+}
+
+export function shouldSuppressCrossOriginDuplicate(
+  previous: Pick<AgentEvent, "origin" | "status"> & Partial<Pick<AgentEvent, "turnId">>,
+  current: Pick<AgentEvent, "origin" | "status"> & Partial<Pick<AgentEvent, "turnId">>
+): boolean {
+  return classifyBodyDuplicate(
+    { ...previous, turnId: previous.turnId ?? "" },
+    { ...current, turnId: current.turnId ?? "" }
+  ) === "suppress";
 }
 
 export function formatEventMessage(event: AgentEvent, includeMetadata: boolean): string {

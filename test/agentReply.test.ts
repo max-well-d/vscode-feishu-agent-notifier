@@ -101,6 +101,56 @@ test("serializes jobs for the same session and can cancel queued work", async ()
   await secondRejected;
 });
 
+test("can defer queue execution until the acknowledgement is delivered", async () => {
+  const runner = new FakeRunner();
+  const queue = new AgentReplyQueue(runner);
+  const queued = queue.enqueue({
+    chatId: "chat",
+    inboundMessageId: "deferred",
+    session: codex,
+    prompt: "after-ack",
+    policy: "planOnly"
+  }, false);
+  const rejected = assert.rejects(queued.completion);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(runner.started, []);
+  queued.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(runner.started, ["after-ack"]);
+  assert.equal(queue.cancelForChat("chat"), 1);
+  await rejected;
+});
+
+test("keeps same-session FIFO order while acknowledgements are in flight", async () => {
+  const runner = new FakeRunner();
+  const queue = new AgentReplyQueue(runner, 2);
+  const first = queue.enqueue({
+    chatId: "chat",
+    inboundMessageId: "first-ack",
+    session: codex,
+    prompt: "first",
+    policy: "planOnly"
+  }, false);
+  const second = queue.enqueue({
+    chatId: "chat",
+    inboundMessageId: "second-ack",
+    session: codex,
+    prompt: "second",
+    policy: "planOnly"
+  }, false);
+  const firstRejected = assert.rejects(first.completion);
+  const secondRejected = assert.rejects(second.completion);
+  second.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(runner.started, []);
+  first.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(runner.started, ["first"]);
+  assert.equal(queue.cancelForChat("chat"), 2);
+  await firstRejected;
+  await secondRejected;
+});
+
 test("extracts the actual Claude session id from stream-json output", () => {
   assert.equal(extractClaudeSessionId([
     '{"type":"system","session_id":"claude-session-1"}',

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.1
+
+- Make Claude Code event state terminal-monotonic: a delayed `MessageDisplay` or transcript event can no longer reopen a completed turn or emit a duplicate realtime card with the same body.
+- Serialize desktop event delivery and update an already-sent Feishu App card in place when the authoritative `Stop` event follows realtime output; fall back to a separate terminal card if the Channel cannot update messages.
+- Deliver the inbound acknowledgement before starting its Agent job, and preserve same-session FIFO order while multiple acknowledgements are in flight.
+- Normalize line endings and trailing whitespace for cross-source body matching, while keeping distinct turn IDs independent.
+
 ## 0.20.0
 
 - Replace whole-page snapshot rendering with a persistent desktop shell and targeted live-region updates. Background Broker, Channel and log refreshes no longer recreate forms, collapse expanded diagnostics, move focus or reset scroll positions.

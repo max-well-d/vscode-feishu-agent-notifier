@@ -105,6 +105,41 @@ test("app mode fetches a token and sends to the configured target", async () => 
   assert.deepEqual(result.receipts, [{ messageId: "om_reply_target", chatId: "oc_target", chunkIndex: 1 }]);
 });
 
+test("updates an app-mode realtime card in place when the terminal event arrives", async () => {
+  const requests: Array<{ url: string; method?: string; body: any }> = [];
+  const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    requests.push({ url, method: init?.method, body: JSON.parse(String(init?.body)) });
+    if (url.includes("tenant_access_token")) {
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: "success",
+        tenant_access_token: "token",
+        expire: 3600
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), { status: 200 });
+  }) as typeof fetch;
+  const config: NotifierConfig = {
+    ...webhookConfig,
+    deliveryMode: "app",
+    appId: "cli_test",
+    appSecret: "app-secret",
+    receiveIdType: "chat_id",
+    receiveId: "oc_target"
+  };
+  const sender = new FeishuSender(fakeFetch);
+  const updated = await sender.updateEvent(event, [{ messageId: "om_progress", chunkIndex: 1 }], config);
+  assert.equal(updated, true);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].method, "PATCH");
+  assert.match(requests[1].url, /\/im\/v1\/messages\/om_progress$/);
+  const card = JSON.parse(requests[1].body.content);
+  assert.equal(card.schema, "2.0");
+  assert.equal(card.header.template, "green");
+  assert.equal(card.body.elements[0].content, event.message);
+});
+
 test("keeps a plain text compatibility mode", async () => {
   const bodies: any[] = [];
   const fakeFetch = (async (_input: string | URL | Request, init?: RequestInit) => {

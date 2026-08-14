@@ -10,7 +10,11 @@ import { AgentEvent, InboundReplyContext } from "../src/types";
 
 class ImmediateRunner extends AgentReplyRunner {
   public readonly jobs: AgentReplyJob[] = [];
+  public constructor(private readonly onRun?: () => void) {
+    super();
+  }
   public override async run(job: AgentReplyJob): Promise<AgentReplyResult> {
+    this.onRun?.();
     this.jobs.push(job);
     return { exitCode: 0, durationMs: 1, outputTail: "" };
   }
@@ -64,6 +68,29 @@ test("routes a quoted Feishu reply to the exact persisted Agent session", async 
   assert.equal(runner.jobs[0].anchorTurnId, "turn-router");
   assert.equal(runner.jobs[0].prompt, "continue");
   assert.match(replies[0], /已接收/);
+});
+
+test("acknowledges an inbound reply before starting its Agent job", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-router-ack-order-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  await registry.recordDelivery(event, [{ messageId: "outgoing-1", chunkIndex: 1 }]);
+  const order: string[] = [];
+  const runner = new ImmediateRunner(() => order.push("run"));
+  const router = new ReplyRouter({
+    registry,
+    queue: new AgentReplyQueue(runner),
+    policy: () => "planOnly",
+    refreshSessions: async () => undefined,
+    reply: async () => {
+      order.push("ack");
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    status: () => "connected",
+    defaultWorkspace: () => ({ cwd: process.cwd(), project: "notifier" })
+  });
+  await router.handle(inbound({ messageId: "ack-order" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["ack", "run"]);
 });
 
 test("supports session listing, selection, aliases, status, and inbound deduplication", async () => {

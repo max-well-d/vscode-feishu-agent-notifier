@@ -76,6 +76,41 @@ test("updates a recently discovered active session to idle without changing mtim
   assert.equal((await registry.getSession("session-2"))?.status, "completed");
 });
 
+test("does not let delayed progress reopen a completed Claude turn", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-late-progress-"));
+  const registry = new SessionRegistry(path.join(root, "registry.json"));
+  const completed = await registry.recordEvent({
+    ...event,
+    source: "claude-code",
+    sessionId: "claude-late",
+    turnId: "claude-turn"
+  });
+  assert.equal(completed.status, "completed");
+  const delayed = await registry.recordEvent({
+    ...event,
+    source: "claude-code",
+    sessionId: "claude-late",
+    turnId: "claude-turn",
+    eventName: "MessageDisplay",
+    status: "progress",
+    occurredAt: "2026-08-13T00:00:01.000Z"
+  });
+  assert.equal(delayed.status, "completed");
+  assert.equal(delayed.completionEvidence, "authoritative");
+  assert.equal(delayed.lastCompletedTurnId, "claude-turn");
+
+  const nextTurn = await registry.recordEvent({
+    ...event,
+    source: "claude-code",
+    sessionId: "claude-late",
+    turnId: "next-turn",
+    eventName: "MessageDisplay",
+    status: "progress",
+    occurredAt: "2026-08-13T00:00:02.000Z"
+  });
+  assert.equal(nextTurn.status, "progress");
+});
+
 test("does not let transcript mtime override an authoritative active state", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-registry-authoritative-"));
   const registry = new SessionRegistry(path.join(root, "registry.json"));

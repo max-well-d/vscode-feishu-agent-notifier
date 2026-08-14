@@ -10,7 +10,7 @@ import { SessionBrokerClient } from "../brokerClient";
 import { FeishuChannelAdapter } from "../channels/feishuAdapter";
 import { loadExternalChannel } from "../channels/pluginLoader";
 import { ChannelRegistry } from "../channels/registry";
-import { ChannelConfiguration, ChannelInboundMessage, ChannelSnapshot } from "../channels/types";
+import { ChannelConfiguration, ChannelDeliveryResult, ChannelInboundMessage, ChannelReceipt, ChannelSnapshot } from "../channels/types";
 import { AgentSession } from "../types";
 import { RemoteExecutionPolicy } from "../types";
 import { ReplyRouter } from "../replyRouter";
@@ -23,7 +23,7 @@ import { deployHookRuntime, deployLegacyWindowMonitor, HookRuntimeInstallation }
 import { CodexTranscriptWatcher } from "../codexTranscriptWatcher";
 import { migrateLegacySharedCodexServer } from "../codexSharedServer";
 import { ClaudeTranscriptWatcher } from "../claudeTranscriptWatcher";
-import { eventDeduplicationKey, shouldSuppressCrossOriginDuplicate } from "../event";
+import { classifyBodyDuplicate, eventBodyDeduplicationKey, eventDeduplicationKey } from "../event";
 import { DesktopConfigStore } from "./configStore";
 
 interface DesktopSnapshot {
@@ -74,11 +74,15 @@ let approvalTimer: NodeJS.Timeout | undefined;
 const announcedApprovals = new Set<string>();
 const inboundMessages = new Map<string, ChannelInboundMessage>();
 const recentEvents = new Map<string, number>();
-const recentBodies = new Map<string, {
+const eventDeliveryQueues = new Map<string, Promise<void>>();
+interface RecentBodyDelivery {
   at: number;
   origin: import("../types").AgentEvent["origin"];
   status: import("../types").AgentEvent["status"];
-}>();
+  turnId: string;
+  receipts?: Record<string, ChannelReceipt[]>;
+}
+const recentBodies = new Map<string, RecentBodyDelivery>();
 let dataDirectory = "";
 let quitting = false;
 let installedHookRuntime: HookRuntimeInstallation | undefined;
@@ -341,40 +345,94 @@ async function startTranscriptWatchers(): Promise<void> {
 }
 
 async function handleAgentEvent(event: import("../types").AgentEvent): Promise<void> {
+  const key = `${event.source}:${event.sessionId}`;
+  const previous = eventDeliveryQueues.get(key) ?? Promise.resolve();
+  const delivery = previous.catch(() => undefined).then(() => processAgentEvent(event));
+  const tracked = delivery
+    .catch((error) => {
+      log("error", `Agent 事件处理失败：${error instanceof Error ? error.message : String(error)}`);
+    })
+    .finally(() => {
+      if (eventDeliveryQueues.get(key) === tracked) eventDeliveryQueues.delete(key);
+    });
+  eventDeliveryQueues.set(key, tracked);
+  return delivery;
+}
+
+async function processAgentEvent(event: import("../types").AgentEvent): Promise<void> {
   const duplicate = duplicateEventKind(event);
-  if (duplicate === "exact") return;
+  if (duplicate.kind === "exact" || duplicate.kind === "suppress") return;
   const session = await sessionRegistry.recordEvent(event);
-  if (duplicate === "cross-origin") {
-    pushSnapshot();
-    return;
-  }
-  const deliveries = await registry.broadcast(event);
+  const deliveries = duplicate.kind === "upgrade" && duplicate.previous?.receipts
+    ? await updateOrDeliverTerminalEvent(duplicate.previous.receipts, event)
+    : await registry.broadcast(event);
+  const deliveredReceipts: Record<string, ChannelReceipt[]> = {};
   for (const [channelId, result] of Object.entries(deliveries)) {
     if (result instanceof Error) {
       log("error", `[${channelId}] 事件投递失败：${result.message}`);
       continue;
     }
+    deliveredReceipts[channelId] = result.receipts;
     for (const receipt of result.receipts) {
       await sessionRegistry.recordMessageRoute(receipt.messageId, session, event.turnId);
     }
   }
+  if (duplicate.current) {
+    duplicate.current.receipts = deliveredReceipts;
+  }
   pushSnapshot();
 }
 
-function duplicateEventKind(event: import("../types").AgentEvent): "exact" | "cross-origin" | undefined {
+async function updateOrDeliverTerminalEvent(
+  previousReceipts: Record<string, ChannelReceipt[]>,
+  event: import("../types").AgentEvent
+): Promise<Record<string, ChannelDeliveryResult | Error>> {
+  const results: Record<string, ChannelDeliveryResult | Error> = {};
+  for (const channel of registry.snapshots()) {
+    if (!channel.enabled || !channel.manifest.capabilities.includes("outbound")) continue;
+    const receipts = previousReceipts[channel.manifest.id] ?? [];
+    try {
+      const updated = await registry.update(channel.manifest.id, receipts, event).catch((error) => {
+        log("warn", `[${channel.manifest.id}] 无法原地更新完成卡片，将发送终态回退：${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      });
+      results[channel.manifest.id] = updated
+        ? { count: receipts.length, receipts }
+        : await registry.send(channel.manifest.id, event);
+    } catch (error) {
+      results[channel.manifest.id] = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  return results;
+}
+
+function duplicateEventKind(event: import("../types").AgentEvent): {
+  kind: "none" | "exact" | "suppress" | "upgrade";
+  current?: RecentBodyDelivery;
+  previous?: RecentBodyDelivery;
+} {
   const now = Date.now();
   const expiry = now - 10 * 60_000;
   for (const [key, at] of recentEvents) if (at < expiry) recentEvents.delete(key);
   for (const [key, value] of recentBodies) if (value.at < expiry) recentBodies.delete(key);
   const eventKey = eventDeduplicationKey(event);
-  if (recentEvents.has(eventKey)) return "exact";
+  if (recentEvents.has(eventKey)) return { kind: "exact" };
   recentEvents.set(eventKey, now);
-  const bodyKey = `${event.source}:${event.sessionId}:${event.message}`;
+  const bodyKey = eventBodyDeduplicationKey(event);
   const previous = recentBodies.get(bodyKey);
-  recentBodies.set(bodyKey, { at: now, origin: event.origin, status: event.status });
-  return previous && now - previous.at < 30_000 && shouldSuppressCrossOriginDuplicate(previous, event)
-    ? "cross-origin"
-    : undefined;
+  const decision = previous && now - previous.at < 10 * 60_000
+    ? classifyBodyDuplicate(previous, event)
+    : "none";
+  if (decision === "suppress") return { kind: "suppress", previous };
+  const current: RecentBodyDelivery = {
+    at: now,
+    origin: event.origin,
+    status: event.status,
+    turnId: event.turnId,
+    ...(decision === "upgrade" ? { receipts: previous?.receipts } : {})
+  };
+  recentBodies.set(bodyKey, current);
+  return { kind: decision, current, previous };
 }
 
 async function loadChannels(): Promise<void> {

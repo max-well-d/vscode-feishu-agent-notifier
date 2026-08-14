@@ -130,6 +130,14 @@ export class ChannelRegistry {
     return result;
   }
 
+  public async update(id: string, receipts: ChannelReceipt[], event: AgentEvent): Promise<boolean> {
+    const channel = this.require(id);
+    if (!channel.configuration.enabled || !channel.adapter.update) {
+      return false;
+    }
+    return channel.adapter.update(receipts, event, structuredClone(channel.configuration.config));
+  }
+
   public async reply(message: ChannelInboundMessage, text: string): Promise<ChannelReceipt> {
     const channel = this.require(message.channelId);
     if (!channel.configuration.enabled || !channel.adapter.reply) {

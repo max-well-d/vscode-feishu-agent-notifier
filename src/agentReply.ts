@@ -64,6 +64,8 @@ export interface EnqueueResult {
   job: AgentReplyJob;
   position: number;
   completion: Promise<AgentReplyResult>;
+  start(): void;
+  cancel(): boolean;
 }
 
 interface PendingJob {
@@ -71,6 +73,7 @@ interface PendingJob {
   resolve: (result: AgentReplyResult) => void;
   reject: (error: Error) => void;
   controller: AbortController;
+  ready: boolean;
 }
 
 export class AgentReplyRunner {
@@ -239,7 +242,7 @@ export class AgentReplyQueue {
     private readonly maximumPending = 20
   ) {}
 
-  public enqueue(input: Omit<AgentReplyJob, "id" | "originalSession">): EnqueueResult {
+  public enqueue(input: Omit<AgentReplyJob, "id" | "originalSession">, autoStart = true): EnqueueResult {
     if (this.pending.length >= this.maximumPending) {
       throw new Error(`远程回复队列已满（最多 ${this.maximumPending} 条）`);
     }
@@ -254,11 +257,30 @@ export class AgentReplyQueue {
       resolve = resolvePromise;
       reject = rejectPromise;
     });
-    const pending: PendingJob = { job, resolve, reject, controller: new AbortController() };
+    const pending: PendingJob = { job, resolve, reject, controller: new AbortController(), ready: autoStart };
     this.pending.push(pending);
     const position = this.pending.length + this.active.size;
-    this.pump();
-    return { job, position, completion };
+    if (autoStart) this.pump();
+    return {
+      job,
+      position,
+      completion,
+      start: () => {
+        if (!this.pending.includes(pending) || pending.ready) return;
+        pending.ready = true;
+        this.pump();
+      },
+      cancel: () => this.cancelJob(job.id)
+    };
+  }
+
+  public cancelJob(jobId: string): boolean {
+    const index = this.pending.findIndex((item) => item.job.id === jobId);
+    if (index < 0) return false;
+    const [item] = this.pending.splice(index, 1);
+    item.controller.abort();
+    item.reject(new Error("任务在启动前已取消"));
+    return true;
   }
 
   public cancelForChat(chatId: string): number {
@@ -318,7 +340,12 @@ export class AgentReplyQueue {
 
   private pump(): void {
     while (this.active.size < Math.max(1, this.maximumConcurrent)) {
-      const index = this.pending.findIndex((candidate) => !this.active.has(sessionKey(candidate.job.session)));
+      const index = this.pending.findIndex((candidate, candidateIndex) => {
+        const key = sessionKey(candidate.job.session);
+        return candidate.ready
+          && !this.active.has(key)
+          && !this.pending.slice(0, candidateIndex).some((earlier) => sessionKey(earlier.job.session) === key);
+      });
       if (index < 0) {
         return;
       }
