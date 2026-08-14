@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.4
+
+- Restore completion-only notification delivery in Agent Link: add a 消息投递时机 setting (实时逐条 / 仅任务结束) on the system settings page, persisted in `desktop-settings.json`. The Hook Receiver normalizer and Codex transcript watcher now read the configured timing instead of being hardcoded to realtime; in completion mode the Claude transcript watcher stays off and Claude Code terminal state comes from the authoritative Stop / StopFailure hooks.
+- Honor `deliveryTiming=completion` end-to-end when Agent Link is the active control plane, matching the VS Code extension behavior. Changing the timing requires an Agent Link restart, consistent with the Hook Receiver port setting.
+
 ## 0.20.3
 
 - Persist every healthy shared Codex App Server descriptor and recover the oldest live service when the primary descriptor is lost or replaced, preventing a second server from reopening a VS Code-owned thread and triggering `already has an active writer`.

@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld("agentLink", {
   chooseDataDirectory: () => ipcRenderer.invoke("data-directory:choose"),
   openDataDirectory: () => ipcRenderer.invoke("data-directory:open"),
   refreshBroker: () => ipcRenderer.invoke("broker:refresh"),
-  saveSettings: (settings: { remoteExecutionPolicy: string; defaultWorkspace: string; receiverPort: number }) => ipcRenderer.invoke("settings:save", settings),
+  saveSettings: (settings: { remoteExecutionPolicy: string; defaultWorkspace: string; receiverPort: number; deliveryTiming: string }) => ipcRenderer.invoke("settings:save", settings),
   installHooks: () => ipcRenderer.invoke("hooks:install"),
   inspectHooks: () => ipcRenderer.invoke("hooks:inspect"),
   onSnapshot: (listener: (snapshot: unknown) => void) => {

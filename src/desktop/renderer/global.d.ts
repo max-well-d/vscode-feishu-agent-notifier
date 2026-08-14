@@ -57,7 +57,7 @@ export interface DesktopSnapshot {
     ownership?: string;
   }>;
   logs: Array<{ at: string; level: string; message: string }>;
-  settings: { remoteExecutionPolicy: "disabled" | "planOnly" | "inherit" | "fullAccess"; defaultWorkspace: string; receiverPort: number };
+  settings: { remoteExecutionPolicy: "disabled" | "planOnly" | "inherit" | "fullAccess"; defaultWorkspace: string; receiverPort: number; deliveryTiming: "realtime" | "completion" };
 }
 
 export interface HookInspection {

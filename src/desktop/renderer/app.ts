@@ -198,6 +198,10 @@ function renderSystem(): string {
         </select><small>推荐“跟随当前会话”。完全访问会跳过 Agent 审批和沙箱。</small></label>
         <label class="field"><span>新会话默认工作目录</span><input name="defaultWorkspace" value="${escapeHtml(snapshot.settings.defaultWorkspace)}" placeholder="D:\\code\\project"><small>只用于从消息端创建的新会话。</small></label>
         <label class="field"><span>Hook Receiver 端口</span><input name="receiverPort" data-type="number" type="number" min="1024" max="65535" value="${snapshot.settings.receiverPort}"><small>仅监听 127.0.0.1；修改后请更新 Agent 接入。</small></label>
+        <label class="field"><span>消息投递时机</span><select name="deliveryTiming">
+          <option value="realtime" ${snapshot.settings.deliveryTiming === "realtime" ? "selected" : ""}>实时逐条</option>
+          <option value="completion" ${snapshot.settings.deliveryTiming === "completion" ? "selected" : ""}>仅任务结束</option>
+        </select><small>仅任务结束在 Agent 完成或失败时发送最后一条消息；修改后重启 Agent Link 生效。</small></label>
         <div class="form-actions"><button class="button primary" type="submit">保存权限设置</button></div><p class="form-status" id="form-status"></p>
       </form>
       <section class="panel service-panel"><div class="panel-title"><div><h2>本地服务</h2><p>只监听本机回环地址</p></div><span id="system-broker-state">检查中</span></div>
@@ -316,7 +320,8 @@ function bindSystemForm(): void {
     void run(window.agentLink.saveSettings({
       remoteExecutionPolicy: policy,
       defaultWorkspace: String(data.get("defaultWorkspace") ?? ""),
-      receiverPort: Number(data.get("receiverPort"))
+      receiverPort: Number(data.get("receiverPort")),
+      deliveryTiming: String(data.get("deliveryTiming") ?? "realtime") as DesktopSnapshot["settings"]["deliveryTiming"]
     }), "系统策略已保存").then((saved) => { if (saved) formDrafts.delete("system"); });
   });
 }
@@ -389,9 +394,11 @@ function patchSystem(): void {
     const policy = form.elements.namedItem("remoteExecutionPolicy");
     const workspace = form.elements.namedItem("defaultWorkspace");
     const port = form.elements.namedItem("receiverPort");
+    const timing = form.elements.namedItem("deliveryTiming");
     if (policy instanceof HTMLSelectElement) policy.value = snapshot.settings.remoteExecutionPolicy;
     if (workspace instanceof HTMLInputElement) workspace.value = snapshot.settings.defaultWorkspace;
     if (port instanceof HTMLInputElement) port.value = String(snapshot.settings.receiverPort);
+    if (timing instanceof HTMLSelectElement) timing.value = snapshot.settings.deliveryTiming;
   }
 }
 

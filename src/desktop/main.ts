@@ -11,8 +11,7 @@ import { FeishuChannelAdapter } from "../channels/feishuAdapter";
 import { loadExternalChannel } from "../channels/pluginLoader";
 import { ChannelRegistry } from "../channels/registry";
 import { ChannelConfiguration, ChannelDeliveryResult, ChannelInboundMessage, ChannelReceipt, ChannelSnapshot } from "../channels/types";
-import { AgentSession } from "../types";
-import { RemoteExecutionPolicy } from "../types";
+import { AgentSession, DeliveryTiming, RemoteExecutionPolicy } from "../types";
 import { formatSession, ReplyRouter } from "../replyRouter";
 import { discoverLocalSessions } from "../sessionCatalog";
 import { SessionRegistry } from "../sessionRegistry";
@@ -50,6 +49,7 @@ interface DesktopSettings {
   remoteExecutionPolicy: RemoteExecutionPolicy;
   defaultWorkspace: string;
   receiverPort: number;
+  deliveryTiming: DeliveryTiming;
 }
 
 const PRODUCT_NAME = "Agent Link";
@@ -67,7 +67,7 @@ let broker: SessionBrokerClient;
 let sessionRegistry: SessionRegistry;
 let replyQueue: AgentReplyQueue;
 let replyRouter: ReplyRouter;
-let settings: DesktopSettings = { remoteExecutionPolicy: "planOnly", defaultWorkspace: "", receiverPort: 37562 };
+let settings: DesktopSettings = { remoteExecutionPolicy: "planOnly", defaultWorkspace: "", receiverPort: 37562, deliveryTiming: "realtime" };
 let hookServer: LocalHookServer;
 let codexWatcher: CodexTranscriptWatcher | undefined;
 let claudeWatcher: ClaudeTranscriptWatcher | undefined;
@@ -323,7 +323,7 @@ async function startHookReceiver(): Promise<void> {
     token = crypto.randomBytes(32).toString("hex");
     await fs.writeFile(tokenPath, `${token}\n`, { encoding: "utf8", mode: 0o600 });
   }
-  const normalizer = new HookEventNormalizer("realtime");
+  const normalizer = new HookEventNormalizer(settings.deliveryTiming);
   hookServer = new LocalHookServer(token, handleAgentEvent, (input) => normalizer.normalize(input), "agent-link");
   await hookServer.start(settings.receiverPort).then(
     () => log("info", `Agent Hook Receiver 正在监听 127.0.0.1:${settings.receiverPort}`),
@@ -339,16 +339,21 @@ async function startTranscriptWatchers(): Promise<void> {
     undefined,
     (error) => log("warn", `Codex transcript 监听失败：${error.message}`),
     1_500,
-    "realtime"
+    settings.deliveryTiming
   );
-  claudeWatcher = new ClaudeTranscriptWatcher(
-    handleAgentEvent,
-    fallback,
-    undefined,
-    (error) => log("warn", `Claude transcript 监听失败：${error.message}`)
-  );
-  await Promise.all([codexWatcher.start(), claudeWatcher.start()]);
-  log("info", "Codex 与 Claude Code 实时 transcript 监听已启动");
+  if (settings.deliveryTiming === "realtime") {
+    claudeWatcher = new ClaudeTranscriptWatcher(
+      handleAgentEvent,
+      fallback,
+      undefined,
+      (error) => log("warn", `Claude transcript 监听失败：${error.message}`)
+    );
+  }
+  await codexWatcher.start();
+  if (claudeWatcher) await claudeWatcher.start();
+  log("info", settings.deliveryTiming === "realtime"
+    ? "Codex 与 Claude Code 实时 transcript 监听已启动"
+    : "Codex 完成事件监听已启动；Claude Code 终态由 Stop Hook 负责");
 }
 
 async function handleAgentEvent(event: import("../types").AgentEvent): Promise<void> {
@@ -937,7 +942,7 @@ async function loadDesktopSettings(): Promise<DesktopSettings> {
     const value = JSON.parse(await fs.readFile(path.join(dataDirectory, "desktop-settings.json"), "utf8")) as DesktopSettings;
     return validateDesktopSettings(value);
   } catch {
-    return { remoteExecutionPolicy: "planOnly", defaultWorkspace: "", receiverPort: 37562 };
+    return { remoteExecutionPolicy: "planOnly", defaultWorkspace: "", receiverPort: 37562, deliveryTiming: "realtime" };
   }
 }
 
@@ -955,7 +960,8 @@ function validateDesktopSettings(value: DesktopSettings): DesktopSettings {
   const receiverPort = Number.isInteger(value?.receiverPort) && value.receiverPort >= 1024 && value.receiverPort <= 65535
     ? value.receiverPort
     : 37562;
-  return { remoteExecutionPolicy, defaultWorkspace: defaultWorkspace ? path.resolve(defaultWorkspace) : "", receiverPort };
+  const deliveryTiming: DeliveryTiming = value?.deliveryTiming === "completion" ? "completion" : "realtime";
+  return { remoteExecutionPolicy, defaultWorkspace: defaultWorkspace ? path.resolve(defaultWorkspace) : "", receiverPort, deliveryTiming };
 }
 
 async function saveDesktopSettings(value: DesktopSettings): Promise<void> {
