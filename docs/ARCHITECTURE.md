@@ -6,6 +6,10 @@
 
 Electron 主进程持有托盘、窗口、配置、安全存储、Hook Receiver 和 Channel Registry。Renderer 是沙箱化的本地静态页面，只能调用 preload 暴露的窄 IPC。
 
+Renderer 外壳只在启动时建立。Broker 快照通过带 ID 的 live regions 局部更新，交互表单、滚动位置和 `<details>` 展开状态不参与后台轮询重建。Channel schema 可以声明分区、控件、可见条件和枚举显示名，桌面端据此生成模式相关配置，而不把飞书字段硬编码进核心。
+
+Tray 消费同一份运行快照，提供任务、队列、会话和 Channel 的实时摘要，并通过 Core API 快速切换远程权限、控制 Channel 生命周期或导航到指定设置页。
+
 ### Session Broker
 
 Broker 是唯一允许持有托管 Codex App Server writer 的进程。桌面端、VS Code 薄适配层和以后加入的 CLI 客户端都应连接它，不应各自启动第二个 writer。

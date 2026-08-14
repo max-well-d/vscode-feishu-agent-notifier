@@ -21,5 +21,15 @@ contextBridge.exposeInMainWorld("agentLink", {
     const handler = (_event: Electron.IpcRendererEvent, message: ChannelInboundMessage): void => listener(message);
     ipcRenderer.on("channel:message", handler);
     return () => ipcRenderer.removeListener("channel:message", handler);
+  },
+  onNavigate: (listener: (view: "overview" | "sessions" | "channels" | "system") => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, view: "overview" | "sessions" | "channels" | "system"): void => listener(view);
+    ipcRenderer.on("navigation:show", handler);
+    return () => ipcRenderer.removeListener("navigation:show", handler);
+  },
+  onLog: (listener: (entry: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, entry: unknown): void => listener(entry);
+    ipcRenderer.on("log:append", handler);
+    return () => ipcRenderer.removeListener("log:append", handler);
   }
 });

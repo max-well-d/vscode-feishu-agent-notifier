@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.0
+
+- Replace whole-page snapshot rendering with a persistent desktop shell and targeted live-region updates. Background Broker, Channel and log refreshes no longer recreate forms, collapse expanded diagnostics, move focus or reset scroll positions.
+- Redesign the Agent Link information architecture around a health banner, readable operating metrics, standard navigation, clear service states, accessible controls and sectioned settings.
+- Add schema-driven conditional Channel configuration. Feishu Webhook and App modes now expose only their relevant credentials and options; App inbound allowlists appear only when bidirectional input is enabled.
+- Turn the system tray into a live control surface with Broker/turn/queue/channel/session monitoring, direct navigation, remote permission switching, per-Channel enable/disable controls and connection refresh.
+- Stream new log records into the existing diagnostics DOM without rebuilding its `<details>` element, preserving the user's explicit expanded/collapsed choice indefinitely.
+
 ## 0.19.0
 
 - Deliver authoritative Claude Code `Stop` / `StopFailure` events even when the same body was already sent by `MessageDisplay` or transcript realtime capture, so the final card and quoted-reply route are marked completed.

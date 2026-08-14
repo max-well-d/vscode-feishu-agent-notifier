@@ -15,6 +15,8 @@ declare global {
       inspectHooks(): Promise<HookInspection>;
       onSnapshot(listener: (snapshot: DesktopSnapshot) => void): () => void;
       onMessage(listener: (message: ChannelInboundMessage) => void): () => void;
+      onNavigate(listener: (view: "overview" | "sessions" | "channels" | "system") => void): () => void;
+      onLog(listener: (entry: DesktopSnapshot["logs"][number]) => void): () => void;
     };
   }
 }
@@ -29,6 +31,7 @@ export interface DesktopSnapshot {
   version: string;
   dataDirectory: string;
   broker: { state: string; codexState: string; activeTurns: number; error?: string };
+  remoteQueue: { active: number; pending: number };
   agents: Array<{ id: string; name: string; executable?: string; available: boolean }>;
   channels: Array<{
     manifest: {
@@ -72,4 +75,12 @@ export interface SchemaProperty {
   format?: string;
   minimum?: number;
   maximum?: number;
+  description?: string;
+  enumLabels?: string[];
+  ui?: {
+    section?: "connection" | "target" | "inbound" | "message" | "advanced";
+    order?: number;
+    control?: "segmented";
+    visibleWhen?: Record<string, string | number | boolean>;
+  };
 }

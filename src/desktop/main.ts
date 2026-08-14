@@ -31,6 +31,7 @@ interface DesktopSnapshot {
   version: string;
   dataDirectory: string;
   broker: { state: string; codexState: string; activeTurns: number; error?: string };
+  remoteQueue: { active: number; pending: number };
   agents: Array<{ id: string; name: string; executable?: string; available: boolean }>;
   channels: ChannelSnapshot[];
   sessions: AgentSession[];
@@ -58,6 +59,7 @@ applyConfiguredRuntimePath();
 const logs: LogRecord[] = [];
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
+let lastTraySnapshot: DesktopSnapshot | undefined;
 let registry: ChannelRegistry;
 let configStore: DesktopConfigStore;
 let broker: SessionBrokerClient;
@@ -430,14 +432,130 @@ function createTray(): void {
     return;
   }
   tray = new Tray(icon.resize({ width: 20, height: 20, quality: "best" }));
-  tray.setToolTip(PRODUCT_NAME);
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "打开 Agent Link", click: showWindow },
+  updateTrayMenu();
+  tray.on("click", showWindow);
+  tray.on("double-click", showWindow);
+  void buildSnapshot().then(updateTrayMenu);
+}
+
+function updateTrayMenu(next?: DesktopSnapshot): void {
+  if (!tray) return;
+  if (next) lastTraySnapshot = next;
+  const current = lastTraySnapshot;
+  const ready = current?.broker.state === "ready";
+  const activeTurns = current?.remoteQueue.active ?? 0;
+  const connectedChannels = current?.channels.filter((item) => item.enabled && item.state === "connected").length ?? 0;
+  const channelCount = current?.channels.length ?? registry?.snapshots().length ?? 0;
+  const policy = current?.settings.remoteExecutionPolicy ?? settings.remoteExecutionPolicy;
+  tray.setToolTip(`${PRODUCT_NAME} · ${ready ? "运行正常" : "需要检查"}\n执行中 ${activeTurns} · 通道 ${connectedChannels}/${channelCount}`);
+  const template: Electron.MenuItemConstructorOptions[] = [
+    { label: ready ? "● 服务运行正常" : "● 服务需要检查", enabled: false },
+    { label: `执行中 ${activeTurns} · 排队 ${current?.remoteQueue.pending ?? 0} · 会话 ${current?.sessions.length ?? 0}`, enabled: false },
+    { label: `消息通道 ${connectedChannels}/${channelCount} 在线`, enabled: false },
+    { type: "separator" },
+    { label: "打开运行总览", click: () => showView("overview") },
+    { label: "查看会话", click: () => showView("sessions") },
+    { label: "配置消息通道", click: () => showView("channels") },
+    { type: "separator" },
+    {
+      label: "远程执行权限",
+      submenu: [
+        trayPolicyItem("关闭远程执行", "disabled", policy),
+        trayPolicyItem("只读模式", "planOnly", policy),
+        trayPolicyItem("跟随当前会话", "inherit", policy),
+        trayPolicyItem("完全访问…", "fullAccess", policy)
+      ]
+    },
+    {
+      label: "快速启停通道",
+      submenu: current?.channels.length
+        ? current.channels.map((channel) => ({
+          label: `${channel.manifest.name} · ${trayChannelState(channel.state)}`,
+          type: "checkbox" as const,
+          checked: channel.enabled,
+          click: () => void setChannelEnabledFromTray(channel.manifest.id, !channel.enabled)
+        }))
+        : [{ label: "暂无通道", enabled: false }]
+    },
+    { label: "刷新连接状态", click: () => void broker.refresh().then(pushSnapshot).catch((error) => showTrayError("刷新失败", error)) },
+    { label: "系统设置", click: () => showView("system") },
     { label: "打开数据目录", click: () => void shell.openPath(dataDirectory) },
     { type: "separator" },
-    { label: "退出", click: () => { quitting = true; app.quit(); } }
-  ]));
-  tray.on("double-click", showWindow);
+    { label: "退出 Agent Link", click: () => { quitting = true; app.quit(); } }
+  ];
+  tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+function trayPolicyItem(label: string, value: RemoteExecutionPolicy, current: RemoteExecutionPolicy): Electron.MenuItemConstructorOptions {
+  return { label, type: "radio", checked: current === value, click: () => void setRemotePolicyFromTray(value) };
+}
+
+async function setRemotePolicyFromTray(policy: RemoteExecutionPolicy): Promise<void> {
+  if (policy === settings.remoteExecutionPolicy) return;
+  if (policy === "fullAccess") {
+    const result = await dialog.showMessageBox({
+      type: "warning",
+      title: "启用完全访问",
+      message: "完全访问会跳过 Agent 审批和沙箱",
+      detail: "只有 Channel 白名单内的用户可以提交指令，但这些指令能够修改文件和执行本机命令。",
+      buttons: ["取消", "启用完全访问"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (result.response !== 1) { updateTrayMenu(); return; }
+  }
+  const previous = settings;
+  try {
+    settings = { ...settings, remoteExecutionPolicy: policy };
+    await saveDesktopSettings(settings);
+    log("info", `托盘已将远程执行策略切换为 ${policy}`);
+    pushSnapshot();
+  } catch (error) {
+    settings = previous;
+    showTrayError("远程执行策略保存失败", error);
+    updateTrayMenu();
+  }
+}
+
+async function setChannelEnabledFromTray(id: string, enabled: boolean): Promise<void> {
+  const channel = registry.snapshots().find((item) => item.manifest.id === id);
+  if (!channel) return;
+  try {
+    const configuration = registry.configuration(id);
+    configuration.enabled = enabled;
+    await registry.configure(id, configuration);
+    await configStore.save(channel.manifest, configuration);
+    log("info", `托盘已${enabled ? "启用" : "停用"} Channel：${channel.manifest.name}`);
+    pushSnapshot();
+  } catch (error) {
+    showTrayError(`${channel.manifest.name} ${enabled ? "启用" : "停用"}失败`, error);
+    pushSnapshot();
+  }
+}
+
+function showTrayError(title: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  log("error", `${title}：${message}`);
+  dialog.showErrorBox(title, message);
+}
+
+function trayChannelState(state: string): string {
+  if (state === "connected") return "在线";
+  if (state === "connecting") return "连接中";
+  if (state === "failed") return "失败";
+  if (state === "degraded") return "不稳定";
+  return state === "disabled" ? "已关闭" : "待机";
+}
+
+function showView(view: "overview" | "sessions" | "channels" | "system"): void {
+  showWindow();
+  if (!mainWindow) return;
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once("did-finish-load", () => mainWindow?.webContents.send("navigation:show", view));
+  } else {
+    mainWindow.webContents.send("navigation:show", view);
+  }
 }
 
 function loadApplicationIcon(): Electron.NativeImage {
@@ -457,7 +575,9 @@ function registerIpc(): void {
     const merged = mergeExistingSecrets(snapshot.manifest, registry.configuration(id), configuration);
     await registry.configure(id, merged);
     await configStore.save(snapshot.manifest, merged);
-    return buildSnapshot();
+    const next = await buildSnapshot();
+    updateTrayMenu(next);
+    return next;
   });
   ipcMain.handle("channel:test", async (_event, id: string) => {
     await registry.send(id, {
@@ -494,7 +614,9 @@ function registerIpc(): void {
   ipcMain.handle("settings:save", async (_event, next: DesktopSettings) => {
     settings = validateDesktopSettings(next);
     await saveDesktopSettings(settings);
-    return buildSnapshot();
+    const snapshot = await buildSnapshot();
+    updateTrayMenu(snapshot);
+    return snapshot;
   });
   ipcMain.handle("hooks:install", async () => {
     const runtime = await prepareHookRuntime();
@@ -591,6 +713,7 @@ async function handleInboundMessage(message: ChannelInboundMessage): Promise<voi
     text: message.text,
     mentionedBot: message.mentionedAdapter
   });
+  pushSnapshot();
 }
 
 async function buildSnapshot(): Promise<DesktopSnapshot> {
@@ -609,6 +732,7 @@ async function buildSnapshot(): Promise<DesktopSnapshot> {
       activeTurns: broker.activeCount,
       error: broker.lastError
     },
+    remoteQueue: { active: replyQueue.activeCount, pending: replyQueue.pendingCount },
     agents: [
       { id: "codex", name: "Codex", executable: codex, available: Boolean(codex) },
       { id: "claude-code", name: "Claude Code", executable: claude, available: Boolean(claude) }
@@ -684,7 +808,10 @@ function log(level: LogRecord["level"], message: string): void {
 }
 
 function pushSnapshot(): void {
-  void buildSnapshot().then((snapshot) => mainWindow?.webContents.send("snapshot:update", snapshot));
+  void buildSnapshot().then((snapshot) => {
+    mainWindow?.webContents.send("snapshot:update", snapshot);
+    updateTrayMenu(snapshot);
+  });
 }
 
 async function resolveDataDirectory(): Promise<string> {

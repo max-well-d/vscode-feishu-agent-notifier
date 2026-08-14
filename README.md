@@ -14,6 +14,9 @@ Claude UI/CLI ┘                                                    ├─ thir
 ```
 
 - `Agent Link.exe` 独立于 VS Code 运行，提供桌面控制面、系统托盘、Hook Receiver 和 Session Broker 客户端。
+- 桌面控制面使用稳定 DOM 和局部状态更新；后台轮询不会重置表单、焦点、滚动位置或用户展开的日志。
+- 飞书 Channel 按 Webhook / 自建应用模式显示对应字段；只有自建应用开启双向消息后才显示用户和群聊白名单。
+- 系统托盘实时显示服务、任务、队列、会话和 Channel 状态，并可快速切换远程权限、启停 Channel 或打开指定设置页。
 - 官方 Codex / Claude Code 继续显示历史、diff、审批和模型能力；Agent Link 不维护缩水版对话面板。
 - Session ID、引用消息和目标会话由本地持久化索引精确绑定。Channel 只负责收发，不拥有 Agent 会话。
 - 普通配置保存在可自定义数据目录；Channel 密钥通过 Electron `safeStorage` 使用操作系统安全存储加密，不写入普通 JSON。

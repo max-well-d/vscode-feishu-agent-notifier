@@ -146,26 +146,33 @@ export function parseFeishuConfig(raw: Record<string, unknown>): FeishuChannelCo
   };
 }
 
-const FEISHU_CONFIG_SCHEMA: Record<string, unknown> = {
+export const FEISHU_CONFIG_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
-    deliveryMode: { type: "string", enum: ["webhook", "app"], default: "webhook" },
-    webhookUrl: { type: "string", format: "uri", secret: true },
-    webhookSecret: { type: "string", secret: true },
-    appId: { type: "string" },
-    appSecret: { type: "string", secret: true },
-    receiveIdType: { type: "string", enum: ["open_id", "user_id", "email", "chat_id"] },
-    receiveId: { type: "string" },
-    messageFormat: { type: "string", enum: ["card", "text"], default: "card" },
-    includeMetadata: { type: "boolean", default: true },
-    maxChunkCharacters: { type: "integer", minimum: 1000, maximum: 20000, default: 3000 },
-    notifyOnFailure: { type: "boolean", default: true },
-    deliveryMaxAttempts: { type: "integer", minimum: 1, maximum: 5, default: 3 },
-    retryBaseDelayMs: { type: "integer", minimum: 100, maximum: 5000, default: 500 },
-    inboundEnabled: { type: "boolean", default: false },
-    allowedUserOpenIds: { type: "array", items: { type: "string" } },
-    allowedChatIds: { type: "array", items: { type: "string" } },
-    requireGroupMention: { type: "boolean", default: true }
+    deliveryMode: {
+      type: "string",
+      enum: ["webhook", "app"],
+      enumLabels: ["群机器人 Webhook", "自建应用"],
+      default: "webhook",
+      description: "Webhook 仅支持向一个群发送；自建应用支持指定目标和双向远程操控。",
+      ui: { control: "segmented", section: "connection", order: 0 }
+    },
+    webhookUrl: { type: "string", format: "uri", secret: true, description: "飞书群机器人设置中的 Webhook 地址。", ui: { section: "connection", order: 10, visibleWhen: { deliveryMode: "webhook" } } },
+    webhookSecret: { type: "string", secret: true, description: "机器人启用签名校验后填写。", ui: { section: "connection", order: 11, visibleWhen: { deliveryMode: "webhook" } } },
+    appId: { type: "string", description: "飞书开放平台自建应用的 App ID。", ui: { section: "connection", order: 20, visibleWhen: { deliveryMode: "app" } } },
+    appSecret: { type: "string", secret: true, description: "自建应用的 App Secret。", ui: { section: "connection", order: 21, visibleWhen: { deliveryMode: "app" } } },
+    receiveIdType: { type: "string", enum: ["chat_id", "open_id", "user_id", "email"], enumLabels: ["群聊 Chat ID", "用户 Open ID", "用户 ID", "邮箱"], default: "chat_id", ui: { section: "target", order: 30, visibleWhen: { deliveryMode: "app" } } },
+    receiveId: { type: "string", description: "默认通知目标；群聊通常以 oc_ 开头，用户 Open ID 以 ou_ 开头。", ui: { section: "target", order: 31, visibleWhen: { deliveryMode: "app" } } },
+    inboundEnabled: { type: "boolean", default: false, description: "通过飞书 WebSocket 接收引用回复和远程命令。", ui: { section: "inbound", order: 40, visibleWhen: { deliveryMode: "app" } } },
+    allowedUserOpenIds: { type: "array", items: { type: "string" }, description: "每行一个 ou_ 开头的用户 Open ID。", ui: { section: "inbound", order: 41, visibleWhen: { deliveryMode: "app", inboundEnabled: true } } },
+    allowedChatIds: { type: "array", items: { type: "string" }, description: "可留空表示仅允许私聊；每行一个 oc_ 开头的群聊 ID。", ui: { section: "inbound", order: 42, visibleWhen: { deliveryMode: "app", inboundEnabled: true } } },
+    requireGroupMention: { type: "boolean", default: true, description: "群聊中仅处理明确 @机器人的消息。", ui: { section: "inbound", order: 43, visibleWhen: { deliveryMode: "app", inboundEnabled: true } } },
+    messageFormat: { type: "string", enum: ["card", "text"], enumLabels: ["消息卡片", "纯文本"], default: "card", ui: { section: "message", order: 50 } },
+    includeMetadata: { type: "boolean", default: true, description: "显示 Agent、项目、Session ID、输入来源和时间。", ui: { section: "message", order: 51 } },
+    maxChunkCharacters: { type: "integer", minimum: 1000, maximum: 20000, default: 3000, ui: { section: "advanced", order: 60 } },
+    notifyOnFailure: { type: "boolean", default: true, ui: { section: "advanced", order: 61 } },
+    deliveryMaxAttempts: { type: "integer", minimum: 1, maximum: 5, default: 3, ui: { section: "advanced", order: 62 } },
+    retryBaseDelayMs: { type: "integer", minimum: 100, maximum: 5000, default: 500, ui: { section: "advanced", order: 63 } }
   },
   required: ["deliveryMode"]
 };
