@@ -37,6 +37,8 @@ export interface BrokerApproval {
   sessionId?: string;
   chatId?: string;
   inboundMessageId?: string;
+  channelId?: string;
+  cwd?: string;
   source?: "codex" | "claude-code";
   kind: "command" | "file-change";
   summary: string;

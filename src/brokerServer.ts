@@ -55,6 +55,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
   const claudeInbound = new Map<string, ClaudeChannelEvent[]>();
   const claudeOutbound = new Map<string, ClaudeChannelOutbound[]>();
   const claudeVerdicts = new Map<string, Array<{ requestId: string; behavior: "allow" | "deny" }>>();
+  const permissionVerdicts = new Map<string, Array<{ behavior: "allow" | "deny" }>>();
   const claudeInputOrigins = new Map<string, "local" | "feishu">();
   const claudeSessions = new Map<string, AgentSession>();
   const remoteContexts = new Map<string, { chatId: string; inboundMessageId: string }>();
@@ -399,6 +400,7 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
               sessionId: `channel:${channelId}`,
               chatId: optionalString(body.chatId),
               inboundMessageId: optionalString(body.inboundMessageId),
+              channelId,
               source: "claude-code",
               kind: optionalString(body.toolName) === "Write" ? "file-change" : "command",
               summary: `${optionalString(body.toolName) ?? "Tool"}: ${optionalString(body.description) ?? optionalString(body.inputPreview) ?? "请求权限"}`.slice(0, 500),
@@ -445,8 +447,47 @@ export async function runBroker(options: BrokerOptions): Promise<void> {
         queue.push({ requestId: approval.public.approvalId, behavior: decision === "accept" ? "allow" : "deny" });
         claudeVerdicts.set(approval.channelId, queue);
       }
+      const verdictQueue = permissionVerdicts.get(approval.public.approvalId);
+      if (verdictQueue) {
+        verdictQueue.push({ behavior: decision === "accept" ? "allow" : "deny" });
+      }
       approval.settle(decision);
       sendJson(response, 200, { accepted: true, winner: optionalString(body.origin) ?? "unknown" });
+      return;
+    }
+    const permissionRegister = url.pathname === "/permissions/register";
+    if (request.method === "POST" && permissionRegister) {
+      const body = await readJson(request);
+      const summary = stringField(body, "summary");
+      const approvalId = crypto.randomUUID();
+      const sessionId = optionalString(body.sessionId);
+      const cwd = optionalString(body.cwd);
+      const expires = setTimeout(() => {
+        pendingApprovals.delete(approvalId);
+        permissionVerdicts.delete(approvalId);
+      }, 10 * 60_000);
+      expires.unref();
+      pendingApprovals.set(approvalId, {
+        public: {
+          approvalId,
+          sessionId,
+          cwd,
+          source: "claude-code",
+          kind: body.kind === "file-change" ? "file-change" : "command",
+          summary: summary.slice(0, 500),
+          createdAt: new Date().toISOString()
+        },
+        settle: () => clearTimeout(expires)
+      });
+      permissionVerdicts.set(approvalId, []);
+      sendJson(response, 200, { accepted: true, approvalId });
+      return;
+    }
+    const permissionVerdict = /^\/permissions\/([^/]+)\/verdict\/next$/.exec(url.pathname);
+    if (request.method === "GET" && permissionVerdict) {
+      const approvalId = decodeURIComponent(permissionVerdict[1]);
+      const verdict = await waitForPermissionVerdict(approvalId, permissionVerdicts, request);
+      sendJson(response, 200, verdict ?? { empty: true });
       return;
     }
     sendJson(response, 404, { error: "not found" });
@@ -554,6 +595,22 @@ async function waitForClaudeVerdict(
     const item = queues.get(channelId)?.shift();
     if (item) {
       return item;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return undefined;
+}
+
+async function waitForPermissionVerdict(
+  approvalId: string,
+  queues: Map<string, Array<{ behavior: "allow" | "deny" }>>,
+  request: IncomingMessage
+): Promise<{ behavior: "allow" | "deny" } | undefined> {
+  const deadline = Date.now() + 25_000;
+  while (!request.destroyed && Date.now() < deadline) {
+    const queue = queues.get(approvalId);
+    if (queue && queue.length > 0) {
+      return queue.shift();
     }
     await new Promise((resolve) => setTimeout(resolve, 150));
   }

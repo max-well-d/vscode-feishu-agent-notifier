@@ -7,6 +7,12 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const MAX_PENDING_EVENTS = 100;
+// Claude Code 同步 hook 超时上限为 600 秒；留 10 秒余量用于本地回退。
+const PERMISSION_MAX_WAIT_MS = 590_000;
+// 单次长轮询时长：本地接收器最长等待 60 秒。
+const PERMISSION_POLL_MS = 65_000;
+
+let decisionWritten = false;
 
 function parseArguments(argv) {
   const result = { positional: [] };
@@ -39,6 +45,10 @@ async function main() {
   }
 
   const event = JSON.parse(raw);
+  if (event.hook_event_name === "PermissionRequest") {
+    await handlePermissionRequest(event, args);
+    return;
+  }
   event.__notifier_source = args.source || "unknown";
   event.__notifier_channel_id = process.env.FEISHU_AGENT_CHANNEL_ID || "";
   event.__notifier_bridge_backend = process.env.FEISHU_AGENT_BRIDGE_BACKEND || "";
@@ -58,11 +68,101 @@ async function main() {
   }
 }
 
+/**
+ * Claude Code PermissionRequest hook：把权限请求转发给本地接收器并长轮询等待
+ * 远程决定（飞书 /approve /deny），把结果作为 permissionDecision 写回 stdout。
+ * 任何失败或超时都回退为 "ask"，恢复 Claude 的本地交互式确认。
+ */
+async function handlePermissionRequest(event, args) {
+  const port = Number(args.port || 37561);
+  try {
+    const token = await readToken(args);
+    const registered = await httpJsonRequest("POST", "/permission-request", port, token,
+      Buffer.from(JSON.stringify({ request: event }), "utf8"));
+    if (!registered || !registered.approvalId) {
+      throw new Error("本地接收器未返回审批 ID");
+    }
+    const approvalId = registered.approvalId;
+    const deadline = Date.now() + PERMISSION_MAX_WAIT_MS;
+    while (Date.now() < deadline) {
+      const verdict = await httpJsonRequest("GET", `/permission-verdict/${encodeURIComponent(approvalId)}`, port, token, null);
+      if (verdict && typeof verdict.decision === "string") {
+        writeDecision(verdict.decision, verdict.decision === "allow"
+          ? "Agent Link 远程已允许"
+          : verdict.decision === "deny" ? "Agent Link 远程已拒绝" : "Agent Link 要求恢复本地确认");
+        return;
+      }
+      // 接收器返回空（无裁决）：等待后重试；单轮在接收器侧已等待至多 60 秒。
+      await delay(1_000);
+    }
+    writeDecision("ask", "10 分钟内未收到远程决定，恢复本地确认");
+  } catch (error) {
+    writeDecision("ask", `Agent Link 无法转发权限请求：${error.message}`);
+  }
+}
+
+function writeDecision(decision, reason) {
+  decisionWritten = true;
+  process.stdout.write(`${JSON.stringify({
+    hookSpecificOutput: {
+      permissionDecision: decision,
+      permissionDecisionReason: reason
+    }
+  })}\n`);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function readToken(args) {
   if (args["token-file"]) {
     return (await fs.readFile(args["token-file"], "utf8")).trim();
   }
   return args.token || "";
+}
+
+function httpJsonRequest(method, requestPath, port, token, body) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: "127.0.0.1",
+      port,
+      path: requestPath,
+      method,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Feishu-Agent-Token": token,
+        "Content-Length": body ? body.length : 0
+      },
+      timeout: PERMISSION_POLL_MS
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let value = {};
+        if (text) {
+          try {
+            value = JSON.parse(text);
+          } catch {
+            value = {};
+          }
+        }
+        if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(value);
+        } else {
+          reject(new Error(`本地通知接收器返回 HTTP ${response.statusCode || "unknown"}`));
+        }
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("连接本地通知接收器超时")));
+    request.on("error", reject);
+    if (body) {
+      request.end(body);
+    } else {
+      request.end();
+    }
+  });
 }
 
 async function postEvent(body, port, token) {
@@ -146,5 +246,7 @@ main()
   })
   .finally(() => {
     // Codex/Claude Stop hooks expect valid JSON on stdout when a command exits 0.
-    process.stdout.write("{}\n");
+    if (!decisionWritten) {
+      process.stdout.write("{}\n");
+    }
   });

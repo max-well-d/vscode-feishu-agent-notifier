@@ -65,6 +65,8 @@ export interface HookInspection {
   codexStopInstalled: boolean;
   claudeStopInstalled: boolean;
   claudeStopFailureInstalled: boolean;
+  claudeMessageDisplayInstalled: boolean;
+  claudePermissionRequestInstalled: boolean;
 }
 
 export interface SchemaProperty {

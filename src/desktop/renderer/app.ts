@@ -201,7 +201,7 @@ function renderSystem(): string {
         <label class="field"><span>消息投递时机</span><select name="deliveryTiming">
           <option value="realtime" ${snapshot.settings.deliveryTiming === "realtime" ? "selected" : ""}>实时逐条</option>
           <option value="completion" ${snapshot.settings.deliveryTiming === "completion" ? "selected" : ""}>仅任务结束</option>
-        </select><small>仅任务结束在 Agent 完成或失败时发送最后一条消息；修改后重启 Agent Link 生效。</small></label>
+        </select><small>仅任务结束在 Agent 完成或失败时发送最后一条消息；保存后即时生效，也可在托盘「通知模式」切换。</small></label>
         <div class="form-actions"><button class="button primary" type="submit">保存权限设置</button></div><p class="form-status" id="form-status"></p>
       </form>
       <section class="panel service-panel"><div class="panel-title"><div><h2>本地服务</h2><p>只监听本机回环地址</p></div><span id="system-broker-state">检查中</span></div>
@@ -267,7 +267,9 @@ function bindView(): void {
   document.querySelector("#install-hooks")?.addEventListener("click", () => {
     setFormStatus("正在更新 Agent 接入…");
     void window.agentLink.installHooks().then((inspection) => {
-      setFormStatus(inspection.codexInstalled && inspection.claudeStopInstalled ? "Codex 与 Claude Code 接入已更新" : "接入已写入，但部分 Hook 尚未就绪");
+      setFormStatus(inspection.codexInstalled && inspection.claudeStopInstalled && inspection.claudePermissionRequestInstalled
+        ? "Codex 与 Claude Code 接入已更新"
+        : "接入已写入，但部分 Hook 尚未就绪");
     }).catch((error) => setFormStatus(error instanceof Error ? error.message : String(error), true));
   });
 }

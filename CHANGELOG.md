@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.6
+
+- Route local agent permission choices through Feishu: install a synchronous Claude Code `PermissionRequest` hook (600s budget, Claude Code ≥ 2.0.45) that pauses the tool call, forwards the request to Agent Link, and long-polls for a remote decision. The request is announced on the message channel with the usual `/approve <ID>` / `/deny <ID>` instructions, so the conversation no longer has to wait for someone at the machine. Local and remote answers race and the first one wins, matching the existing approval semantics; if nobody answers within 10 minutes (or the receiver is unreachable), the hook falls back to `ask` and Claude shows its normal interactive prompt.
+- Announce Codex approvals raised by local (non-Feishu) sessions on the message channel too, instead of silently waiting for the desktop; they resolve through the same `/approve` / `/deny` path.
+- Add 通知模式 to the tray menu (实时逐条 / 仅任务结束). Switching restarts the Hook Receiver and transcript watchers immediately and persists to `desktop-settings.json`; the system settings page applies the change live as well.
+- New broker endpoints `POST /permissions/register` and `GET /permissions/:id/verdict/next` back the hook flow: permission requests raised by local hooks appear in the broker snapshot, resolve through the existing approvals endpoint, and deliver the verdict to the waiting hook. Broker snapshot approvals carry an optional `cwd` so announcements can name the project.
+
 ## 0.20.5
 
 - Shut down every component when Agent Link exits instead of leaving daemons behind. The quit path now waits for the Hook Receiver and Channel Registry to close, stops both transcript watchers, asks the Session Broker to exit gracefully through an authenticated `POST /shutdown` endpoint (SIGTERM fallback for older brokers), removes the `agent-link.json` control-plane descriptor, and only then terminates the app.

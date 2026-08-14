@@ -208,6 +208,36 @@ export class SessionBrokerClient implements ManagedCodexExecutor {
     await this.call("POST", `/approvals/${encodeURIComponent(approvalId)}`, { decision, origin });
   }
 
+  /**
+   * Register a permission request raised by a local agent hook (PermissionPrompt),
+   * so that it appears in the broker snapshot and can be resolved with /approve /deny.
+   */
+  public async registerPermission(request: {
+    summary: string;
+    kind?: "command" | "file-change";
+    sessionId?: string;
+    cwd?: string;
+  }): Promise<{ approvalId: string }> {
+    return this.call("POST", "/permissions/register", {
+      summary: request.summary,
+      kind: request.kind,
+      sessionId: request.sessionId,
+      cwd: request.cwd
+    });
+  }
+
+  /** Long-poll for a remote decision on a permission request registered via registerPermission. */
+  public async waitForPermissionVerdict(approvalId: string, timeoutMs: number): Promise<"allow" | "deny" | undefined> {
+    const result = await this.call<{ behavior?: "allow" | "deny"; empty?: boolean }>(
+      "GET",
+      `/permissions/${encodeURIComponent(approvalId)}/verdict/next`,
+      undefined,
+      undefined,
+      timeoutMs
+    );
+    return result.empty ? undefined : result.behavior;
+  }
+
   /** Disconnect only. The daemon and its Codex subprocess deliberately survive. */
   public dispose(): void {
     this.descriptor = undefined;

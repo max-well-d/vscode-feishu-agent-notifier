@@ -31,6 +31,7 @@ export interface HookInspectionResult {
   claudeStopInstalled: boolean;
   claudeStopFailureInstalled: boolean;
   claudeMessageDisplayInstalled: boolean;
+  claudePermissionRequestInstalled: boolean;
 }
 
 interface CodexNotifyMergeResult {
@@ -132,7 +133,8 @@ export async function inspectHooks(homeDirectory?: string): Promise<HookInspecti
     codexStopInstalled,
     claudeStopInstalled: eventHasNotifier(hooks.Stop),
     claudeStopFailureInstalled: eventHasNotifier(hooks.StopFailure),
-    claudeMessageDisplayInstalled: eventHasNotifier(hooks.MessageDisplay)
+    claudeMessageDisplayInstalled: eventHasNotifier(hooks.MessageDisplay),
+    claudePermissionRequestInstalled: eventHasNotifier(hooks.PermissionRequest)
   };
 }
 
@@ -203,7 +205,7 @@ export function removeCodexNotify(
 export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOptions): boolean {
   const before = JSON.stringify(document);
   const hooks = ensureHooks(document);
-  for (const eventName of ["Stop", "StopFailure", "MessageDisplay"]) {
+  for (const eventName of ["Stop", "StopFailure", "MessageDisplay", "PermissionRequest"]) {
     const groups = ensureEventGroups(hooks, eventName);
     removeMatchingGroups(groups);
     const command = hookCommand(options);
@@ -220,13 +222,16 @@ export function mergeClaudeHooks(document: JsonObject, options: InstallHooksOpti
     if (eventName === "MessageDisplay") {
       args.push("--queue-offline", "false");
     }
+    // PermissionRequest 必须同步执行并等待决策（最长 600 秒），Claude 才
+    // 会暂停当前工具调用等待远程 /approve /deny；超时后回退本地交互式确认。
+    const blocking = eventName === "PermissionRequest";
     groups.push({
       hooks: [{
         type: "command",
         command: command[0],
         args,
-        async: true,
-        timeout: 10
+        async: !blocking,
+        timeout: blocking ? 600 : 10
       }]
     });
   }

@@ -7,22 +7,23 @@ import path from "node:path";
 import { resolveAgentExecutable } from "../agentExecutable";
 import { AgentReplyJob, AgentReplyQueue, AgentReplyRunner } from "../agentReply";
 import { SessionBrokerClient } from "../brokerClient";
+import { BrokerApproval } from "../brokerProtocol";
 import { FeishuChannelAdapter } from "../channels/feishuAdapter";
 import { loadExternalChannel } from "../channels/pluginLoader";
 import { ChannelRegistry } from "../channels/registry";
 import { ChannelConfiguration, ChannelDeliveryResult, ChannelInboundMessage, ChannelReceipt, ChannelSnapshot } from "../channels/types";
-import { AgentSession, DeliveryTiming, RemoteExecutionPolicy } from "../types";
+import { AgentEvent, AgentSession, DeliveryTiming, RemoteExecutionPolicy } from "../types";
 import { formatSession, ReplyRouter } from "../replyRouter";
 import { discoverLocalSessions } from "../sessionCatalog";
 import { SessionRegistry } from "../sessionRegistry";
 import { installHooks, inspectHooks } from "../hookInstaller";
-import { LocalHookServer } from "../server";
+import { HookServerPermissions, LocalHookServer, PermissionVerdict } from "../server";
 import { HookEventNormalizer } from "../hookEventNormalizer";
 import { deployHookRuntime, deployLegacyWindowMonitor, HookRuntimeInstallation } from "../hookRuntime";
 import { CodexTranscriptWatcher } from "../codexTranscriptWatcher";
 import { migrateLegacySharedCodexServer } from "../codexSharedServer";
 import { ClaudeTranscriptWatcher } from "../claudeTranscriptWatcher";
-import { classifyBodyDuplicate, eventBodyDeduplicationKey, eventDeduplicationKey } from "../event";
+import { classifyBodyDuplicate, eventBodyDeduplicationKey, eventDeduplicationKey, projectNameFromCwd } from "../event";
 import { DesktopConfigStore } from "./configStore";
 import { refreshProcessBridgeRuntime } from "../processBridge";
 
@@ -281,18 +282,83 @@ function startApprovalMonitor(): void {
         if (!active.has(approvalId)) announcedApprovals.delete(approvalId);
       }
       for (const approval of brokerSnapshot.pendingApprovals) {
-        if (announcedApprovals.has(approval.approvalId) || !approval.inboundMessageId) continue;
-        const inbound = inboundMessages.get(approval.inboundMessageId);
-        if (!inbound) continue;
+        if (announcedApprovals.has(approval.approvalId)) continue;
+        if (approval.channelId) continue; // claude-channel 会话自行公告自己的审批请求
+        const inbound = approval.inboundMessageId ? inboundMessages.get(approval.inboundMessageId) : undefined;
+        if (!inbound && !approval.sessionId) continue; // 本地会话审批没有会话标识则不公告
         announcedApprovals.add(approval.approvalId);
-        await registry.reply(inbound,
-          `${approval.source === "claude-code" ? "Claude Code" : "Codex"} 请求权限：${approval.summary}\n`
-          + `审批 ID：${approval.approvalId}\n发送 /approve ${approval.approvalId} 或 /deny ${approval.approvalId}；本地与远程先响应者生效。`
-        );
+        const source = approval.source === "codex" ? "Codex" : "Claude Code";
+        const text = `${source} 请求权限：${approval.summary}\n`
+          + `审批 ID：${approval.approvalId}\n发送 /approve ${approval.approvalId} 或 /deny ${approval.approvalId}；本地与远程先响应者生效。`;
+        if (inbound) {
+          await registry.reply(inbound, text);
+        } else {
+          await broadcastLocalApproval(approval, text);
+        }
       }
     }).catch((error) => log("debug", `Broker 审批轮询失败：${error instanceof Error ? error.message : String(error)}`));
   }, 1_500);
   approvalTimer.unref();
+}
+
+/**
+ * 本地会话（Claude Code PermissionPrompt hook / 本地 Codex）产生的权限请求：
+ * 注册进 broker 后由 startApprovalMonitor 公告到消息通道，飞书 /approve /deny 可远程决定。
+ */
+async function registerLocalPermission(request: unknown): Promise<{ approvalId: string }> {
+  const raw = request as Record<string, unknown>;
+  const toolName = typeof raw.tool_name === "string" ? raw.tool_name : "Tool";
+  const input = raw.input;
+  const inputPreview = typeof input === "string"
+    ? input.slice(0, 300)
+    : input && typeof input === "object"
+      ? JSON.stringify(input).slice(0, 300)
+      : "";
+  const prompt = typeof raw.prompt === "string" ? raw.prompt.trim() : "";
+  const summary = `${toolName}${prompt ? `：${prompt}` : inputPreview ? `：${inputPreview}` : ""}`.slice(0, 500);
+  const sessionId = typeof raw.session_id === "string" ? raw.session_id : undefined;
+  const cwd = typeof raw.cwd === "string" ? raw.cwd : "";
+  return broker.registerPermission({
+    summary,
+    kind: toolName === "Write" ? "file-change" : "command",
+    sessionId,
+    cwd: cwd || undefined
+  });
+}
+
+async function waitForLocalPermissionVerdict(
+  approvalId: string,
+  timeoutMs: number
+): Promise<PermissionVerdict | undefined> {
+  if (broker.brokerState !== "ready") return undefined;
+  try {
+    const behavior = await broker.waitForPermissionVerdict(approvalId, timeoutMs);
+    return behavior ? { decision: behavior } : undefined;
+  } catch (error) {
+    log("debug", `权限裁决轮询失败：${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+async function broadcastLocalApproval(approval: BrokerApproval, text: string): Promise<void> {
+  const event: AgentEvent = {
+    source: approval.source === "codex" ? "codex" : "claude-code",
+    eventName: "permission-request",
+    status: "progress",
+    origin: "hook",
+    sessionId: approval.sessionId ?? "local-session",
+    turnId: approval.approvalId,
+    cwd: approval.cwd ?? "",
+    project: approval.cwd ? projectNameFromCwd(approval.cwd) : "Agent Link",
+    message: text,
+    occurredAt: approval.createdAt
+  };
+  const deliveries = await registry.broadcast(event);
+  for (const [channelId, result] of Object.entries(deliveries)) {
+    if (result instanceof Error) {
+      log("warn", `[${channelId}] 权限请求公告投递失败：${result.message}`);
+    }
+  }
 }
 
 async function writeDesktopDescriptor(): Promise<void> {
@@ -340,7 +406,17 @@ async function startHookReceiver(): Promise<void> {
     await fs.writeFile(tokenPath, `${token}\n`, { encoding: "utf8", mode: 0o600 });
   }
   const normalizer = new HookEventNormalizer(settings.deliveryTiming);
-  hookServer = new LocalHookServer(token, handleAgentEvent, (input) => normalizer.normalize(input), "agent-link");
+  const permissions: HookServerPermissions = {
+    register: (request) => registerLocalPermission(request),
+    waitForVerdict: (approvalId, timeoutMs) => waitForLocalPermissionVerdict(approvalId, timeoutMs)
+  };
+  hookServer = new LocalHookServer(
+    token,
+    handleAgentEvent,
+    (input) => normalizer.normalize(input),
+    "agent-link",
+    permissions
+  );
   await hookServer.start(settings.receiverPort).then(
     () => log("info", `Agent Hook Receiver 正在监听 127.0.0.1:${settings.receiverPort}`),
     (error) => log("error", `Agent Hook Receiver 启动失败：${error instanceof Error ? error.message : String(error)}`)
@@ -571,6 +647,13 @@ function updateTrayMenu(next?: DesktopSnapshot): void {
       ]
     },
     {
+      label: "通知模式",
+      submenu: [
+        trayTimingItem("实时逐条", "realtime"),
+        trayTimingItem("仅任务结束", "completion")
+      ]
+    },
+    {
       label: "快速启停通道",
       submenu: current?.channels.length
         ? current.channels.map((channel) => ({
@@ -592,6 +675,42 @@ function updateTrayMenu(next?: DesktopSnapshot): void {
 
 function trayPolicyItem(label: string, value: RemoteExecutionPolicy, current: RemoteExecutionPolicy): Electron.MenuItemConstructorOptions {
   return { label, type: "radio", checked: current === value, click: () => void setRemotePolicyFromTray(value) };
+}
+
+function trayTimingItem(label: string, value: DeliveryTiming): Electron.MenuItemConstructorOptions {
+  return {
+    label,
+    type: "radio",
+    checked: settings.deliveryTiming === value,
+    click: () => void setDeliveryTimingFromTray(value)
+  };
+}
+
+async function setDeliveryTimingFromTray(timing: DeliveryTiming): Promise<void> {
+  if (timing === settings.deliveryTiming) return;
+  const previous = settings;
+  try {
+    settings = { ...settings, deliveryTiming: timing };
+    await saveDesktopSettings(settings);
+    await applyDeliveryTiming();
+    log("info", `托盘已将通知模式切换为${timing === "realtime" ? "实时逐条" : "仅任务结束"}`);
+    pushSnapshot();
+  } catch (error) {
+    settings = previous;
+    showTrayError("通知模式切换失败", error);
+    updateTrayMenu();
+  }
+}
+
+/** 让通知模式的变更立即生效：重启 hook receiver 与 transcript watchers。 */
+async function applyDeliveryTiming(): Promise<void> {
+  await hookServer?.stop().catch(() => undefined);
+  await startHookReceiver();
+  codexWatcher?.stop();
+  codexWatcher = undefined;
+  claudeWatcher?.stop();
+  claudeWatcher = undefined;
+  await startTranscriptWatchers();
 }
 
 async function setRemotePolicyFromTray(policy: RemoteExecutionPolicy): Promise<void> {
@@ -716,8 +835,14 @@ function registerIpc(): void {
     return buildSnapshot();
   });
   ipcMain.handle("settings:save", async (_event, next: DesktopSettings) => {
+    const previous = settings;
     settings = validateDesktopSettings(next);
     await saveDesktopSettings(settings);
+    if (settings.deliveryTiming !== previous.deliveryTiming) {
+      await applyDeliveryTiming().catch((error) => {
+        log("warn", `通知模式应用失败：${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     const snapshot = await buildSnapshot();
     updateTrayMenu(snapshot);
     return snapshot;
